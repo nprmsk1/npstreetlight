@@ -195,7 +195,14 @@
   @media print{
     .wo-moo-title{background:#1B2430 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
     .wo-item{border:1px solid #999;}
-    #woSheet{font-size:12px;}
+    #woSheet{font-size:11.5px;}
+    /* 4 รายการต่อ 1 หน้ากระดาษ */
+    .wo-item.wo-pagebreak{page-break-after:always;break-after:page;}
+    .wo-item{margin-bottom:8px;padding:9px;}
+    .wo-qr-row{margin-top:8px;padding-top:7px;}
+    .wo-table{font-size:11px;}
+    .wo-table th,.wo-table td{padding:2px 4px 2px 0;}
+    .wo-moo{margin-bottom:10px;}
   }
   .toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 18px;border-radius:24px;font-size:13px;z-index:60;opacity:0;transition:opacity .2s;pointer-events:none;}
   .toast.show{opacity:1;}
@@ -640,19 +647,25 @@ function mooCode(p){
   const n=parseInt(String(p.moo||'').replace(/\D/g,''));
   return isNaN(n)?'X':String(n);
 }
-function buildDXF(){
+function typeCode(t){return ({sodium:'NA',metal:'MH',led:'LED'})[t]||'OTH';}
+/* แปลงข้อความไทยเป็นค่าที่ CAD อ่านได้ปลอดภัย (ถ้าตั้ง codepage ไม่ได้) */
+function cadText(t){return String(t==null?'':t);}
+
+function buildDXF(opts){
+  opts=opts||{};
+  const useBlocks=opts.blocks!==false;
   const layers=new Map();
   const ents=[];
   let minE=1e12,minN=1e12,maxE=-1e12,maxN=-1e12,zone=null,count=0;
   const addLayer=(n,c)=>{if(!layers.has(n))layers.set(n,{name:n,color:c});};
   const g=(code,val)=>ents.push(String(code),String(val));
 
-  POINTS.forEach((p,pi)=>{
+  POINTS.forEach(p=>{
     const pts=(p.poles||[]).filter(x=>x.lat&&x.lng);
     if(!pts.length)return;
     const mc=mooCode(p);
-    const lyPole='M'+mc+'_POLE', lyLine='M'+mc+'_LINE', lyTxt='M'+mc+'_TEXT';
-    addLayer(lyPole,2);addLayer(lyLine,1);addLayer(lyTxt,7);
+    const lyPole='M'+mc+'_POLE', lyLine='M'+mc+'_LINE', lyTxt='M'+mc+'_TEXT', lyNode='M'+mc+'_NODE';
+    addLayer(lyPole,2);addLayer(lyLine,1);addLayer(lyTxt,7);addLayer(lyNode,3);
 
     const uts=pts.map(pole=>{
       const u=toUTM(+pole.lat,+pole.lng);
@@ -661,18 +674,44 @@ function buildDXF(){
       minN=Math.min(minN,u.northing);maxN=Math.max(maxN,u.northing);
       return {u,pole};
     });
+
     uts.forEach(({u,pole},i)=>{
-      const col=ACI[pole.lampType||p.lampType]||7;
-      // เสา = วงกลมรัศมี 1.5 ม.
-      g(0,'CIRCLE');g(8,lyPole);g(62,col);
-      g(10,u.easting.toFixed(3));g(20,u.northing.toFixed(3));g(30,'0.0');g(40,'1.5');
-      // ป้ายกำกับ
-      g(0,'TEXT');g(8,lyTxt);
-      g(10,(u.easting+2).toFixed(3));g(20,(u.northing+1).toFixed(3));g(30,'0.0');g(40,'2.0');
-      g(1,(p.pointName||'')+'-'+(i+1)+' '+((pole.watt||p.watt||'')+'W'));
+      const lt=pole.lampType||p.lampType;
+      const col=ACI[lt]||7;
+      const watt=(pole.watt||p.watt||'');
+      const label=(p.pointName||'')+'-'+(i+1);
+
+      // POINT = โหนดสำหรับ snap (osnap: node)
+      g(0,'POINT');g(8,lyNode);g(62,col);
+      g(10,u.easting.toFixed(3));g(20,u.northing.toFixed(3));g(30,'0.0');
+
+      if(useBlocks){
+        // INSERT block พร้อม ATTRIB -> ดึงตาราง (Data Extraction) ได้
+        g(0,'INSERT');g(66,'1');g(8,lyPole);g(62,col);g(2,'POLE');
+        g(10,u.easting.toFixed(3));g(20,u.northing.toFixed(3));g(30,'0.0');
+        const attr=(tag,val,dy)=>{
+          g(0,'ATTRIB');g(8,lyTxt);
+          g(10,(u.easting+2).toFixed(3));g(20,(u.northing+dy).toFixed(3));g(30,'0.0');
+          g(40,'1.5');g(1,cadText(val));g(7,'STANDARD');g(2,tag);g(70,'0');
+        };
+        attr('ID',label,1.5);
+        attr('TYPE',typeCode(lt),0);
+        attr('WATT',watt,-1.5);
+        attr('MOO',p.moo||'',-3.0);
+        attr('SOI',p.pointName||'',-4.5);
+        attr('METER',p.meterNo||'-',-6.0);
+        attr('TRAFO',p.transformerNo||'-',-7.5);
+        g(0,'SEQEND');g(8,lyPole);
+      }else{
+        g(0,'CIRCLE');g(8,lyPole);g(62,col);
+        g(10,u.easting.toFixed(3));g(20,u.northing.toFixed(3));g(30,'0.0');g(40,'1.5');
+        g(0,'TEXT');g(8,lyTxt);g(7,'STANDARD');
+        g(10,(u.easting+2).toFixed(3));g(20,(u.northing+1).toFixed(3));g(30,'0.0');g(40,'2.0');
+        g(1,cadText(label+' '+typeCode(lt)+watt+'W'));
+      }
       count++;
     });
-    // เส้นเชื่อมแนวเสา
+
     for(let i=0;i<uts.length-1;i++){
       g(0,'LINE');g(8,lyLine);g(62,1);
       g(10,uts[i].u.easting.toFixed(3));g(20,uts[i].u.northing.toFixed(3));g(30,'0.0');
@@ -681,27 +720,123 @@ function buildDXF(){
   });
   if(!count)return null;
 
+  // ---- คำอธิบายแผนผัง (legend) มุมซ้ายล่าง ----
+  addLayer('TITLE',7);
+  const tx=minE, ty=minN-12;
+  const line=(txt,dy,h)=>{g(0,'TEXT');g(8,'TITLE');g(7,'STANDARD');
+    g(10,tx.toFixed(3));g(20,(ty-dy).toFixed(3));g(30,'0.0');g(40,String(h||2));g(1,cadText(txt));};
+  line('STREET LIGHT PLAN - Huai Yai Subdistrict',0,3);
+  line('CRS: WGS84 / UTM Zone '+zone+'N (EPSG:326'+zone+')  UNITS: METERS',5,2);
+  line('POLES: '+count+'   EXPORTED: '+new Date().toISOString().slice(0,10),9,2);
+  line('LEGEND: NA=Sodium(2)  MH=MetalHalide(4)  LED=6  OTH=7',13,2);
+  minN=Math.min(minN,ty-16);
+
+  // ---- HEADER ----
   const header=['0','SECTION','2','HEADER',
     '9','$ACADVER','1','AC1009',
     '9','$DWGCODEPAGE','3','ANSI_874',
     '9','$INSBASE','10','0.0','20','0.0','30','0.0',
     '9','$EXTMIN','10',minE.toFixed(3),'20',minN.toFixed(3),'30','0.0',
     '9','$EXTMAX','10',maxE.toFixed(3),'20',maxN.toFixed(3),'30','0.0',
+    '9','$LIMMIN','10',minE.toFixed(3),'20',minN.toFixed(3),
+    '9','$LIMMAX','10',maxE.toFixed(3),'20',maxN.toFixed(3),
+    '9','$LUNITS','70','2','9','$INSUNITS','70','6',   // 6 = เมตร
+    '9','$PDMODE','70','34','9','$PDSIZE','40','0.5',
     '0','ENDSEC'];
-  const ls=[...layers.values()];
-  const tables=['0','SECTION','2','TABLES','0','TABLE','2','LAYER','70',String(ls.length)];
-  ls.forEach(l=>tables.push('0','LAYER','2',l.name,'70','0','62',String(l.color),'6','CONTINUOUS'));
-  tables.push('0','ENDTAB','0','ENDSEC');
 
-  const body=[...header,...tables,'0','SECTION','2','ENTITIES',...ents,'0','ENDSEC','0','EOF'];
+  // ---- TABLES: LTYPE + LAYER + STYLE ----
+  const ls=[...layers.values()];
+  const tables=['0','SECTION','2','TABLES'];
+  // LTYPE (ต้องประกาศ ไม่งั้นบาง CAD ฟ้อง)
+  tables.push('0','TABLE','2','LTYPE','70','1',
+    '0','LTYPE','2','CONTINUOUS','70','0','3','Solid line','72','65','73','0','40','0.0',
+    '0','ENDTAB');
+  // LAYER
+  tables.push('0','TABLE','2','LAYER','70',String(ls.length));
+  ls.forEach(l=>tables.push('0','LAYER','2',l.name,'70','0','62',String(l.color),'6','CONTINUOUS'));
+  tables.push('0','ENDTAB');
+  // STYLE (สำหรับ TEXT/ATTRIB)
+  tables.push('0','TABLE','2','STYLE','70','1',
+    '0','STYLE','2','STANDARD','70','0','40','0.0','41','1.0','50','0.0','71','0','42','2.5',
+    '3','txt','4','',
+    '0','ENDTAB');
+  tables.push('0','ENDSEC');
+
+  // ---- BLOCKS: นิยาม block POLE + ATTDEF ----
+  const blocks=['0','SECTION','2','BLOCKS'];
+  if(useBlocks){
+    blocks.push('0','BLOCK','8','0','2','POLE','70','2','10','0.0','20','0.0','30','0.0','3','POLE','1','');
+    // สัญลักษณ์เสา: วงกลม + กากบาท
+    blocks.push('0','CIRCLE','8','0','10','0.0','20','0.0','30','0.0','40','1.5');
+    blocks.push('0','LINE','8','0','10','-1.5','20','0.0','30','0.0','11','1.5','21','0.0','31','0.0');
+    blocks.push('0','LINE','8','0','10','0.0','20','-1.5','30','0.0','11','0.0','21','1.5','31','0.0');
+    const attdef=(tag,prompt,dy)=>blocks.push('0','ATTDEF','8','0',
+      '10','2.0','20',String(dy),'30','0.0','40','1.5','1','','3',prompt,'2',tag,'70','0','7','STANDARD');
+    attdef('ID','Pole ID',1.5);
+    attdef('TYPE','Lamp type',0);
+    attdef('WATT','Watt',-1.5);
+    attdef('MOO','Moo',-3.0);
+    attdef('SOI','Soi',-4.5);
+    attdef('METER','Meter no',-6.0);
+    attdef('TRAFO','Transformer no',-7.5);
+    blocks.push('0','ENDBLK','8','0');
+  }
+  blocks.push('0','ENDSEC');
+
+  const body=[...header,...tables,...blocks,'0','SECTION','2','ENTITIES',...ents,'0','ENDSEC','0','EOF'];
   return {text:body.join('\r\n'),count,zone};
 }
-function exportDXF(){
-  const r=buildDXF();
+
+/* ---- KML สำหรับ Google Earth / QGIS ---- */
+function buildKML(){
+  const esc2=t=>String(t==null?'':t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  let n=0;
+  const styles=`
+  <Style id="sodium"><IconStyle><color>ff3da3e8</color><scale>0.9</scale></IconStyle></Style>
+  <Style id="metal"><IconStyle><color>ffb5a73f</color><scale>0.9</scale></IconStyle></Style>
+  <Style id="led"><IconStyle><color>ffd86b7c</color><scale>0.9</scale></IconStyle></Style>
+  <Style id="other"><IconStyle><color>ff72645b</color><scale>0.9</scale></IconStyle></Style>
+  <Style id="soiline"><LineStyle><color>ff241be0</color><width>3</width></LineStyle></Style>`;
+  const folders=POINTS.map(p=>{
+    const pts=(p.poles||[]).filter(x=>x.lat&&x.lng);
+    if(!pts.length)return '';
+    n+=pts.length;
+    const marks=pts.map((pole,i)=>{
+      const lt=pole.lampType||p.lampType;
+      return `<Placemark><name>${esc2((p.pointName||'')+'-'+(i+1))}</name>
+        <styleUrl>#${lt}</styleUrl>
+        <description><![CDATA[หมู่: ${esc2(p.moo||'-')}<br>ซอย: ${esc2(p.pointName||'-')}<br>หลอด: ${esc2(poleLampLabel(p,pole))}<br>มิเตอร์: ${esc2(p.meterNo||'-')}<br>หม้อแปลง: ${esc2(p.transformerNo||'-')}]]></description>
+        <Point><coordinates>${pole.lng},${pole.lat},0</coordinates></Point></Placemark>`;
+    }).join('');
+    const path=pts.length>1?`<Placemark><name>แนวเสา ${esc2(p.pointName||'')}</name><styleUrl>#soiline</styleUrl>
+      <LineString><tessellate>1</tessellate><coordinates>${pts.map(x=>x.lng+','+x.lat+',0').join(' ')}</coordinates></LineString></Placemark>`:'';
+    return `<Folder><name>${esc2((p.moo?p.moo+' · ':'')+(p.pointName||''))}</name>${marks}${path}</Folder>`;
+  }).join('');
+  if(!n)return null;
+  return {text:`<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document>
+<name>ทะเบียนโคมไฟถนน</name>${styles}${folders}
+</Document></kml>`,count:n};
+}
+function exportKML(){
+  const r=buildKML();
+  if(!r){alert('ยังไม่มีเสาไฟที่บันทึกพิกัด');return;}
+  const d=new Date();const stamp=d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
+  downloadBlob(r.text,'lamp-plan-'+stamp+'.kml','application/vnd.google-earth.kml+xml');
+  alert('ส่งออก KML สำเร็จ ('+r.count+' เสา)\n\nเปิดได้ใน Google Earth, QGIS\nหรือนำเข้า AutoCAD Map/Civil 3D ด้วย MAPIMPORT');
+}
+
+function exportDXF(useBlocks){
+  const r=buildDXF({blocks:useBlocks!==false});
   if(!r){alert('ยังไม่มีเสาไฟที่บันทึกพิกัด\n\nกรุณาปักเสาก่อนจึงจะส่งออก DXF ได้');return;}
   const d=new Date();const stamp=d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
   downloadBlob(r.text,'lamp-plan-UTM'+r.zone+'N-'+stamp+'.dxf','application/dxf');
-  alert('ส่งออก DXF สำเร็จ\n\nเสาไฟ '+r.count+' ต้น\nระบบพิกัด: UTM Zone '+r.zone+'N (WGS84) หน่วยเมตร\n\nเปิดใน AutoCAD ได้ทันที\nเลเยอร์: M<หมู่>_POLE / _LINE / _TEXT');
+  alert('ส่งออก DXF สำเร็จ\n\nเสาไฟ '+r.count+' ต้น\n'+
+    'ระบบพิกัด: WGS84 / UTM Zone '+r.zone+'N (EPSG:326'+r.zone+')\nหน่วย: เมตร\n\n'+
+    (useBlocks!==false
+      ? 'เสาเป็น BLOCK "POLE" มี ATTRIBUTE 7 ช่อง\n(ID, TYPE, WATT, MOO, SOI, METER, TRAFO)\nใช้คำสั่ง DATAEXTRACTION สร้างตารางได้เลย\n\n'
+      : 'เสาเป็นวงกลม + ข้อความธรรมดา\n\n')+
+    'เลเยอร์: M<หมู่>_POLE / _LINE / _TEXT / _NODE\nพิมพ์ ZOOM แล้ว E เพื่อดูทั้งหมด');
 }
 function exportUTMCsv(){
   const rows=[['หมู่ที่','ซอย','เสาต้นที่','Easting_X','Northing_Y','Zone','ประเภทหลอด','วัตต์','lat','lng']];
@@ -802,24 +937,111 @@ function pointUrl(id){return location.href.split('#')[0]+'#/point/'+id;}
 function mapsLink(p){if(p.mapUrl)return p.mapUrl;if(p.lat&&p.lng)return 'https://www.google.co.th/maps/dir/?api=1&destination='+p.lat+','+p.lng;return null;}
 function fmtDate(iso){if(!iso)return '';const d=new Date(iso);return d.toLocaleDateString('th-TH',{day:'2-digit',month:'short',year:'2-digit'})+' '+d.toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'});}
 
-/* ============ image compression ============ */
-function compressImage(file,maxDim=1000,quality=0.72){
-  return new Promise((resolve,reject)=>{
-    const rd=new FileReader();
-    rd.onload=()=>{
-      const img=new Image();
-      img.onload=()=>{
-        let{width:w,height:h}=img;
-        if(w>h&&w>maxDim){h=Math.round(h*maxDim/w);w=maxDim;}
-        else if(h>=w&&h>maxDim){w=Math.round(w*maxDim/h);h=maxDim;}
-        const cv=document.createElement('canvas');cv.width=w;cv.height=h;
-        cv.getContext('2d').drawImage(img,0,0,w,h);
-        resolve(cv.toDataURL('image/jpeg',quality));
-      };
-      img.onerror=reject;img.src=rd.result;
-    };
-    rd.onerror=reject;rd.readAsDataURL(file);
+/* ============ image compression (วัดขนาดจริง แล้วบีบจนพอดี) ============ */
+const PHOTO_BUDGET = 220*1024;   // ไบต์ต่อรูป (หลังเข้ารหัส) — 3 รูปยังห่างเพดาน 1MB
+const MAX_PHOTOS = 3;
+
+function b64Bytes(dataUrl){
+  const i=dataUrl.indexOf(',');
+  const b=dataUrl.length-i-1;
+  const pad=(dataUrl.endsWith('==')?2:dataUrl.endsWith('=')?1:0);
+  return Math.floor(b*3/4)-pad;
+}
+function drawToDataUrl(img,maxDim,quality){
+  let{width:w,height:h}=img;
+  if(w>h&&w>maxDim){h=Math.round(h*maxDim/w);w=maxDim;}
+  else if(h>=w&&h>maxDim){w=Math.round(w*maxDim/h);h=maxDim;}
+  const cv=document.createElement('canvas');cv.width=w;cv.height=h;
+  const ctx=cv.getContext('2d');
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,w,h);   // กันพื้นโปร่งใสกลายเป็นดำ
+  ctx.drawImage(img,0,0,w,h);
+  return cv.toDataURL('image/jpeg',quality);
+}
+function loadImage(src){
+  return new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(im);im.onerror=rej;im.src=src;});
+}
+/* บีบจนขนาด <= budget โดยลดขนาด/คุณภาพทีละขั้น */
+async function compressToBudget(src,budget){
+  const img=await loadImage(src);
+  const steps=[[1400,.78],[1200,.72],[1000,.68],[900,.62],[800,.55],[700,.48],[600,.42],[520,.38],[440,.34]];
+  let out=null;
+  for(const [dim,q] of steps){
+    out=drawToDataUrl(img,dim,q);
+    if(b64Bytes(out)<=budget)return out;
+  }
+  return out;   // เล็กที่สุดเท่าที่ทำได้
+}
+async function compressImage(file){
+  const dataUrl=await new Promise((res,rej)=>{
+    const rd=new FileReader();rd.onload=()=>res(rd.result);rd.onerror=rej;rd.readAsDataURL(file);
   });
+  return await compressToBudget(dataUrl,PHOTO_BUDGET);
+}
+/* ตรวจก่อนบันทึก: ถ้ารายการยังใหญ่เกิน ให้บีบซ้ำจนพอดี */
+async function fitPhotosForSave(rec,onNote){
+  if(!rec.photos||!rec.photos.length)return rec;
+  let photos=[...rec.photos];
+  const size=()=>docSize({...rec,photos});
+  if(size()<=DOC_LIMIT)return {...rec,photos};
+  // รอบ 1: บีบรูปที่เป็น base64 ให้เล็กลงเรื่อยๆ
+  for(const budget of [180*1024,120*1024,80*1024,50*1024]){
+    for(let i=0;i<photos.length;i++){
+      if(!isDataUrl(photos[i]))continue;
+      if(b64Bytes(photos[i])>budget){
+        try{photos[i]=await compressToBudget(photos[i],budget);}catch(e){}
+      }
+    }
+    if(onNote)onNote('กำลังลดขนาดรูป...');
+    if(size()<=DOC_LIMIT)return {...rec,photos};
+  }
+  // รอบ 2: จำเป็นต้องตัดรูปท้ายออก
+  while(photos.length&&size()>DOC_LIMIT)photos.pop();
+  return {...rec,photos,_trimmed:true};
+}
+
+/* ============ ทำให้ dropdown ค้นหาได้ ============ */
+function makeSearchable(sel,placeholder){
+  if(!sel||sel.dataset.searchable)return;
+  sel.dataset.searchable='1';
+  const box=document.createElement('input');
+  box.type='text';
+  box.placeholder=placeholder||'🔍 พิมพ์เพื่อค้นหา...';
+  box.style.cssText='width:100%;padding:9px 12px;border-radius:10px;border:1px solid var(--line);font-family:Sarabun,sans-serif;font-size:14px;margin-bottom:6px;background:var(--surface);';
+  sel.parentNode.insertBefore(box,sel);
+
+  // เก็บตัวเลือกทั้งหมดไว้ตั้งแต่ต้น
+  const groups=[...sel.querySelectorAll('optgroup')].map(g=>({
+    label:g.label, opts:[...g.querySelectorAll('option')].map(o=>({v:o.value,t:o.textContent,sel:o.selected}))
+  }));
+  const loose=[...sel.children].filter(c=>c.tagName==='OPTION')
+    .map(o=>({v:o.value,t:o.textContent,sel:o.selected}));
+
+  function rebuild(q){
+    const s=(q||'').trim().toLowerCase();
+    const keep=o=>!s||o.t.toLowerCase().includes(s)||(o.v===''); // เก็บตัวเลือก "ไม่ระบุ" ไว้เสมอ
+    const cur=sel.value;
+    sel.innerHTML='';
+    loose.filter(keep).forEach(o=>{
+      const e=document.createElement('option');e.value=o.v;e.textContent=o.t;sel.appendChild(e);
+    });
+    groups.forEach(g=>{
+      const hits=g.opts.filter(keep);
+      if(!hits.length)return;
+      const og=document.createElement('optgroup');og.label=g.label;
+      hits.forEach(o=>{const e=document.createElement('option');e.value=o.v;e.textContent=o.t;og.appendChild(e);});
+      sel.appendChild(og);
+    });
+    // คงค่าเดิมถ้ายังอยู่ในรายการ
+    if([...sel.querySelectorAll('option')].some(o=>o.value===cur))sel.value=cur;
+    const n=sel.querySelectorAll('option').length;
+    box.style.borderColor=(s&&!n)?'var(--danger)':'var(--line)';
+  }
+  box.oninput=()=>rebuild(box.value);
+  box.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();sel.focus();}};
+}
+/* เรียกใช้กับหลาย select พร้อมกัน */
+function makeSearchableAll(root,ids,placeholder){
+  ids.forEach(id=>{const el=(root||document).querySelector('#'+id);if(el)makeSearchable(el,placeholder);});
 }
 
 /* ============ router ============ */
@@ -970,14 +1192,24 @@ function renderDashboard(){
 }
 
 /* ============ list / search ============ */
-let LS={q:'',group:'',type:''};
+let LS={q:'',moo:'',soi:'',type:''};
 function renderList(){
   const app=document.getElementById('app');
-  const groups=[...new Set(POINTS.map(p=>p.group).filter(Boolean))].sort();
+  const mooOf=p=>p.moo||p.group||'ไม่ระบุ';
+  const moos=[...new Set(POINTS.map(mooOf))].sort((a,b)=>{
+    const na=parseInt(String(a).replace(/\D/g,''))||999, nb=parseInt(String(b).replace(/\D/g,''))||999;
+    return na-nb||a.localeCompare(b,'th');
+  });
+  // ซอยที่เลือกได้ ขึ้นกับหมู่ที่เลือก
+  const soisInMoo=[...new Set(POINTS.filter(p=>!LS.moo||mooOf(p)===LS.moo).map(p=>p.pointName).filter(Boolean))]
+    .sort((a,b)=>a.localeCompare(b,'th'));
+  if(LS.soi&&!soisInMoo.includes(LS.soi))LS.soi='';   // เปลี่ยนหมู่แล้วซอยเดิมไม่มี -> ล้างค่า
+
   let list=POINTS.filter(p=>{
-    if(LS.group&&p.group!==LS.group)return false;
+    if(LS.moo&&mooOf(p)!==LS.moo)return false;
+    if(LS.soi&&p.pointName!==LS.soi)return false;
     if(LS.type&&p.lampType!==LS.type)return false;
-    if(LS.q){const hay=(p.group+' '+p.pointName+' '+(p.note||'')).toLowerCase();if(!hay.includes(LS.q.toLowerCase()))return false;}
+    if(LS.q){const hay=((p.moo||'')+' '+(p.group||'')+' '+p.pointName+' '+(p.note||'')).toLowerCase();if(!hay.includes(LS.q.toLowerCase()))return false;}
     return true;
   });
   const grouped={};list.forEach(p=>{(grouped[p.group||'ไม่ระบุกลุ่ม']=grouped[p.group||'ไม่ระบุกลุ่ม']||[]).push(p);});
@@ -991,8 +1223,17 @@ function renderList(){
     </div>
     <div class="content">
       <div class="toolbar"><input type="text" id="q" placeholder="🔍 ค้นหาชื่อซอย / จุด..." value="${esc(LS.q)}"></div>
+            <div class="toolbar">
+        <select id="fmoo" style="flex:1">
+          <option value="">① ทุกหมู่</option>
+          ${moos.map(g=>`<option value="${esc(g)}" ${g===LS.moo?'selected':''}>${esc(g)}</option>`).join('')}
+        </select>
+      </div>
       <div class="toolbar">
-        <select id="fg" style="flex:1"><option value="">ทุกสาย/ถนน</option>${groups.map(g=>`<option value="${esc(g)}" ${g===LS.group?'selected':''}>${esc(g)}</option>`).join('')}</select>
+        <select id="fsoi" style="flex:1" ${!LS.moo?'':''}>
+          <option value="">② ${LS.moo?'ทุกซอยใน'+esc(LS.moo):'ทุกซอย'}</option>
+          ${soisInMoo.map(n=>`<option value="${esc(n)}" ${n===LS.soi?'selected':''}>${esc(n)}</option>`).join('')}
+        </select>
         <select id="ft"><option value="">ทุกประเภท</option><option value="sodium" ${LS.type==='sodium'?'selected':''}>โซเดียม</option><option value="metal" ${LS.type==='metal'?'selected':''}>เมทัลฮาไลค์</option><option value="led" ${LS.type==='led'?'selected':''}>LED</option><option value="other" ${LS.type==='other'?'selected':''}>อื่นๆ</option></select>
       </div>
       <div id="lw"></div>
@@ -1012,8 +1253,10 @@ function renderList(){
 
   const q=document.getElementById('q');
   q.oninput=e=>{LS.q=e.target.value;const pos=e.target.selectionStart;renderList();const nq=document.getElementById('q');nq.focus();nq.setSelectionRange(pos,pos);};
-  document.getElementById('fg').onchange=e=>{LS.group=e.target.value;renderList();};
+  document.getElementById('fmoo').onchange=e=>{LS.moo=e.target.value;LS.soi='';renderList();};
+  document.getElementById('fsoi').onchange=e=>{LS.soi=e.target.value;renderList();};
   document.getElementById('ft').onchange=e=>{LS.type=e.target.value;renderList();};
+  makeSearchableAll(document,['fsoi'],'🔍 ค้นหาซอยในหมู่นี้...');
 }
 
 /* ============ detail ============ */
@@ -1519,16 +1762,55 @@ function readLampPicker(root,idPrefix){
   return {lampType:type,watt:watt,lampTypeOther:type==='other'?root.querySelector('#'+idPrefix+'_typeother').value.trim():''};
 }
 
-async function addPoleGPS(p){
-  const g=await getLocationSmart(p.lat,p.lng);
+/* ถามวิธีระบุตำแหน่งก่อน: GPS หรือ ปักหมุดเอง */
+function askPoleMethod(){
+  return new Promise(resolve=>{
+    const wrap=document.createElement('div');
+    wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:70;display:flex;align-items:flex-end;justify-content:center;';
+    wrap.innerHTML=`<div style="background:#fff;width:100%;max-width:760px;border-radius:18px 18px 0 0;padding:20px 16px 24px">
+      <div style="font-weight:700;font-size:16px;margin-bottom:2px">ระบุตำแหน่งเสาด้วยวิธีใด?</div>
+      <div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:16px">เลือกวิธีที่เหมาะกับสถานการณ์</div>
+      <button class="btn btn-ok btn-block" id="pm_gps" style="margin-bottom:10px;padding:16px">
+        📍 ใช้ GPS (ยืนอยู่ที่เสา)
+      </button>
+      <div style="font-size:11.5px;color:var(--ink-soft);margin:-4px 0 14px;text-align:center">แม่นที่สุดเมื่ออยู่หน้างานกลางแจ้ง</div>
+      <button class="btn btn-primary btn-block" id="pm_pin" style="padding:16px">
+        🗺️ ปักหมุดบนแผนที่เอง
+      </button>
+      <div style="font-size:11.5px;color:var(--ink-soft);margin:6px 0 14px;text-align:center">ใช้ได้ทุกที่ · เทียบภาพดาวเทียมได้ · ไม่ต้องอยู่หน้างาน</div>
+      <button class="btn btn-outline btn-block" id="pm_cancel">ยกเลิก</button>
+    </div>`;
+    document.body.appendChild(wrap);
+    const done=v=>{wrap.remove();resolve(v);};
+    wrap.onclick=e=>{if(e.target===wrap)done(null);};
+    wrap.querySelector('#pm_gps').onclick=()=>done('gps');
+    wrap.querySelector('#pm_pin').onclick=()=>done('pin');
+    wrap.querySelector('#pm_cancel').onclick=()=>done(null);
+  });
+}
+
+async function addPoleGPS(p,opts){
+  opts=opts||{};
+  const method=opts.method||await askPoleMethod();
+  if(!method)return;
+  let g;
+  if(method==='pin'){
+    // ถ้าซอยมีเสาอยู่แล้ว ให้เริ่มที่เสาต้นล่าสุด เพื่อปักต่อได้ง่าย
+    const last=(p.poles||[]).filter(x=>x.lat&&x.lng).slice(-1)[0];
+    g=await pickOnMap(last?last.lat:p.lat, last?last.lng:p.lng);
+    if(g)g.acc='';
+  }else{
+    g=await getLocationSmart(p.lat,p.lng);
+  }
   if(!g)return;
   const fresh=POINTS.find(x=>x.id===p.id)||p;
   const nextNo=((fresh.poles||[]).length)+1;
   // ค่าเริ่มต้น: ใช้ของเสาต้นล่าสุด ถ้าไม่มีก็ใช้ของซอย
   const last=(fresh.poles||[])[ (fresh.poles||[]).length-1 ];
-  const defType=(last&&last.lampType)||fresh.lampType||'sodium';
-  const defWatt=(last&&last.watt)||fresh.watt||'';
-  const defOther=(last&&last.lampTypeOther)||fresh.lampTypeOther||'';
+  const src=opts.lastLamp||last||{};
+  const defType=src.lampType||fresh.lampType||'sodium';
+  const defWatt=src.watt||fresh.watt||'';
+  const defOther=src.lampTypeOther||fresh.lampTypeOther||'';
 
   const wrap=document.createElement('div');
   wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:70;display:flex;align-items:flex-end;justify-content:center;';
@@ -1578,15 +1860,51 @@ async function addPoleGPS(p){
       lampType:lamp.lampType,watt:lamp.watt,lampTypeOther:lamp.lampTypeOther});
     try{
       const saved=await savePoint(target);
+      const savedPole=target.poles[target.poles.length-1];
       wrap.remove();
-      toast('✅ บันทึกเสาแล้ว · รวม '+(saved.poles||[]).length+' ต้น');
-      renderDetail(p.id);
+      const n=(saved.poles||[]).length;
+      toast('✅ บันทึกเสาต้นที่ '+n+' แล้ว');
+      // ถามต่อทันที เพื่อเดินเก็บหลายต้นรวดเดียว
+      const again=await askContinuePole(p,n,method);
+      if(again){
+        addPoleGPS(POINTS.find(x=>x.id===p.id)||p,{method:again,lastLamp:savedPole});
+      }else{
+        renderDetail(p.id);
+      }
     }catch(err){
       target.poles.pop();
       btn.disabled=false;btn.textContent='💾 ลองบันทึกอีกครั้ง';
       alert('บันทึกไม่สำเร็จ\n\n'+(err.message||err)+'\n\nเสายังไม่ถูกเพิ่ม กรุณาลองใหม่');
     }
   };
+}
+
+/* ถามว่าจะเพิ่มเสาต้นถัดไปเลยไหม */
+function askContinuePole(p,count,lastMethod){
+  return new Promise(resolve=>{
+    const wrap=document.createElement('div');
+    wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:72;display:flex;align-items:flex-end;justify-content:center;';
+    wrap.innerHTML=`<div style="background:#fff;width:100%;max-width:760px;border-radius:18px 18px 0 0;padding:22px 16px 24px;text-align:center">
+      <div style="font-size:44px;line-height:1;margin-bottom:6px">✅</div>
+      <div style="font-weight:700;font-size:17px">บันทึกเสาต้นที่ ${count} แล้ว</div>
+      <div style="font-size:12.5px;color:var(--ink-soft);margin:4px 0 18px">${esc(p.pointName||'')} · รวม ${count} ต้น</div>
+
+      <button class="btn btn-ok btn-block" id="cp_same" style="padding:16px;margin-bottom:8px">
+        ➕ เพิ่มเสาต้นที่ ${count+1} (วิธีเดิม)
+      </button>
+      <button class="btn btn-outline btn-block" id="cp_other" style="margin-bottom:8px">
+        ${lastMethod==='gps'?'🗺️ เพิ่มต้นถัดไป · ปักหมุดเอง':'📍 เพิ่มต้นถัดไป · ใช้ GPS'}
+      </button>
+      <button class="btn btn-primary btn-block" id="cp_done">เสร็จแล้ว · ดูรายการเสา</button>
+      <div style="font-size:11px;color:var(--ink-soft);margin-top:10px">ชนิดหลอดและวัตต์จะใช้ค่าเดิมให้อัตโนมัติ</div>
+    </div>`;
+    document.body.appendChild(wrap);
+    const done=v=>{wrap.remove();resolve(v);};
+    wrap.onclick=e=>{if(e.target===wrap)done(null);};
+    wrap.querySelector('#cp_same').onclick=()=>done(lastMethod);
+    wrap.querySelector('#cp_other').onclick=()=>done(lastMethod==='gps'?'pin':'gps');
+    wrap.querySelector('#cp_done').onclick=()=>done(null);
+  });
 }
 
 function editPole(p,poleId){
@@ -1700,6 +2018,7 @@ function askRecordMaterial(r){
     <div class="action-row"><button class="btn btn-outline" id="am_skip">ข้าม</button><button class="btn btn-ok" id="am_save">ตัดสต็อก</button></div>
   </div>`;
   document.body.appendChild(wrap);
+  makeSearchableAll(wrap,['am_item'],'🔍 ค้นหาวัสดุ...');
   wrap.onclick=e=>{if(e.target===wrap)wrap.remove();};
   wrap.querySelector('#am_skip').onclick=()=>wrap.remove();
   wrap.querySelector('#am_save').onclick=async()=>{
@@ -1776,7 +2095,9 @@ function showRepairForm(pointId,repairId){
     }else pw.innerHTML='';
   }
   refreshPoles();
-  wrap.querySelector('#rp_point').onchange=refreshPoles;
+  wrap.querySelector('#rp_point').onchange=()=>{refreshPoles();makeSearchableAll(wrap,['rp_pole'],'🔍 ค้นหาเสา...');};
+  makeSearchableAll(wrap,['rp_point'],'🔍 ค้นหาหมู่ / ซอย...');
+  makeSearchableAll(wrap,['rp_pole'],'🔍 ค้นหาเสา...');
 
   wrap.onclick=e=>{if(e.target===wrap)wrap.remove();};
   wrap.querySelector('#rp_cancel').onclick=()=>wrap.remove();
@@ -1889,14 +2210,19 @@ function renderComplain(pointId){
     }else w.innerHTML='';
   }
   refreshComplainPoles();
-  document.getElementById('c_point').onchange=refreshComplainPoles;
+  document.getElementById('c_point').onchange=()=>{refreshComplainPoles();makeSearchableAll(document,['c_pole'],'🔍 ค้นหาเสา...');};
+  makeSearchableAll(document,['c_point'],'🔍 ค้นหาหมู่ / ซอย...');
+  makeSearchableAll(document,['c_pole'],'🔍 ค้นหาเสา...');
 
   document.getElementById('c_photo').onchange=async e=>{
     const files=[...e.target.files];e.target.value='';
     for(const f of files){
-      if(complainPhotos.length>=3){toast('แนบได้สูงสุด 3 รูป');break;}
-      try{toast('กำลังบีบอัดรูป...');complainPhotos.push(await compressImage(f,900,0.65));}
-      catch(err){toast('อ่านรูปไม่สำเร็จ');}
+      if(complainPhotos.length>=MAX_PHOTOS){toast('แนบได้สูงสุด '+MAX_PHOTOS+' รูป');break;}
+      try{
+        toast('กำลังบีบอัดรูป...');
+        const b=await compressImage(f);complainPhotos.push(b);
+        toast('เพิ่มรูปแล้ว ('+Math.round(b64Bytes(b)/1024)+' KB)');
+      }catch(err){toast('อ่านรูปไม่สำเร็จ');}
     }
     drawCThumbs();
   };
@@ -1930,6 +2256,9 @@ function renderComplain(pointId){
       history:[{status:'pending',at:now}]
     };
     try{
+      const fitted=await fitPhotosForSave(rec,m=>{btn.textContent=m;});
+      delete fitted._trimmed;
+      rec.photos=fitted.photos;
       if(FBSTORAGE&&rec.photos.some(isDataUrl)){
         btn.textContent='กำลังอัปโหลดรูป...';
         const r=await materializePhotos(rec.photos,'repairs',rec.id,(i,n)=>{btn.textContent='อัปโหลดรูป '+i+'/'+n+'...';});
@@ -2084,6 +2413,10 @@ function renderWorkOrder(){
           </div>`).join('')}
       </div>
     </div>`;
+
+  // 4 รายการต่อหน้ากระดาษ
+  const items=[...document.querySelectorAll('#woSheet .wo-item')];
+  items.forEach((el,i)=>{ if((i+1)%4===0 && i!==items.length-1) el.classList.add('wo-pagebreak'); });
 
   // สร้าง QR
   jobs.forEach(r=>{
@@ -2540,9 +2873,19 @@ function renderReport(){
         <button class="btn btn-primary" onclick="window.print()">🖨️ พิมพ์ / PDF</button>
         <button class="btn btn-outline" onclick="exportExcel()">📊 ส่งออก Excel</button>
       </div>
-      <div class="action-row no-print" style="margin-top:0;margin-bottom:14px">
-        <button class="btn btn-outline" onclick="exportDXF()">📐 DXF (AutoCAD)</button>
+      <div class="section-label no-print">ส่งออกสำหรับงานเขียนแบบ</div>
+      <div class="action-row no-print" style="margin-top:0">
+        <button class="btn btn-outline" onclick="exportDXF(true)">📐 DXF + Attribute</button>
+        <button class="btn btn-outline" onclick="exportDXF(false)">📐 DXF แบบง่าย</button>
+      </div>
+      <div class="action-row no-print" style="margin-top:0;margin-bottom:6px">
         <button class="btn btn-outline" onclick="exportUTMCsv()">📄 CSV พิกัด UTM</button>
+        <button class="btn btn-outline" onclick="exportKML()">🌏 KML (Google Earth)</button>
+      </div>
+      <div class="hint no-print" style="margin-bottom:14px;line-height:1.7">
+        <b>DXF + Attribute</b> — เสาเป็น block มีข้อมูลแนบ ใช้ DATAEXTRACTION ดึงเป็นตารางใน AutoCAD ได้<br>
+        <b>DXF แบบง่าย</b> — ถ้าโปรแกรมเก่าอ่าน block ไม่ได้<br>
+        <b>KML</b> — เปิดใน Google Earth / QGIS / MAPIMPORT
       </div>
 
       <div class="section-label">สรุปโคมไฟทั้งหมด</div>
@@ -2783,6 +3126,8 @@ function showTxForm(itemId,kind,txId){
     </div>
   </div>`;
   document.body.appendChild(wrap);
+  makeSearchableAll(wrap,['tx_item'],'🔍 ค้นหาวัสดุ...');
+  makeSearchableAll(wrap,['tx_point'],'🔍 ค้นหาหมู่ / ซอย...');
   wrap.onclick=e=>{if(e.target===wrap)wrap.remove();};
   wrap.querySelector('#tx_cancel').onclick=()=>wrap.remove();
   wrap.querySelector('#tx_save').onclick=async()=>{
@@ -2923,6 +3268,7 @@ function renderForm(id){
     nameIn.value=cur||nameIn.value||'';
   }
   fillSoi();
+  makeSearchableAll(document,['f_soi'],'🔍 ค้นหาชื่อซอย...');
   document.getElementById('f_soi').onchange=e=>{
     const nameIn=document.getElementById('f_name');
     if(e.target.value==='__new__'){nameIn.value='';nameIn.focus();}
@@ -2982,10 +3328,13 @@ function renderForm(id){
   document.getElementById('f_photo').onchange=async e=>{
     const files=[...e.target.files];e.target.value='';
     for(const f of files){
-      try{toast('กำลังบีบอัดรูป...');const b64=await compressImage(f);formPhotos.push(b64);renderThumbs();}
-      catch(err){toast('อ่านรูปไม่สำเร็จ');}
+      if(formPhotos.length>=MAX_PHOTOS){toast('แนบได้สูงสุด '+MAX_PHOTOS+' รูป');break;}
+      try{
+        toast('กำลังบีบอัดรูป...');
+        const b64=await compressImage(f);formPhotos.push(b64);renderThumbs();
+        toast('เพิ่มรูปแล้ว ('+Math.round(b64Bytes(b64)/1024)+' KB)');
+      }catch(err){toast('อ่านรูปไม่สำเร็จ');}
     }
-    toast('เพิ่มรูปแล้ว');
   };
 
   document.getElementById('pf').onsubmit=async e=>{
@@ -3020,6 +3369,15 @@ function renderForm(id){
       photos:formPhotos,   // จะถูกแปลงเป็นลิงก์ด้านล่างถ้าต่อ Storage
       note:document.getElementById('f_note').value.trim()};
     try{
+      const fitted=await fitPhotosForSave(rec,m=>{btn.textContent=m;});
+      if(fitted._trimmed){
+        const lost=rec.photos.length-fitted.photos.length;
+        if(!confirm('รูปภาพรวมใหญ่เกินขีดจำกัด\n\nต้องตัดออก '+lost+' รูป จึงจะบันทึกได้\n\nดำเนินการต่อ?')){
+          btn.disabled=false;btn.textContent='บันทึก';return;
+        }
+      }
+      delete fitted._trimmed;
+      rec.photos=fitted.photos;
       if(FBSTORAGE&&rec.photos.some(isDataUrl)){
         btn.textContent='กำลังอัปโหลดรูป...';
         const r=await materializePhotos(rec.photos,'points',p.id,(i,n)=>{btn.textContent='อัปโหลดรูป '+i+'/'+n+'...';});
