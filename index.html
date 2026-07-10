@@ -23,6 +23,7 @@
   .st-pending{--c:#8E5BD8;--cs:#E9E0FA;}
   .st-new{--c:#C94C4C;--cs:#FADCDC;}
   .st-check{--c:#E0872B;--cs:#FBEBD2;}
+  .st-waiting{--c:#B4763B;--cs:#F3E4D3;}
   .st-progress{--c:#3FA7B5;--cs:#DCF1F3;}
   .st-done{--c:#3E9E6B;--cs:#DBF0E4;}
   *{box-sizing:border-box;}
@@ -177,15 +178,18 @@
   }
   /* ===== ใบสั่งงานช่าง ===== */
   .wo-header{text-align:center;padding:10px 0 16px;border-bottom:2px solid var(--ink);margin-bottom:16px;}
-  .wo-moo{margin-bottom:22px;break-inside:auto;}
+  .wo-moo{margin-bottom:22px;}
   .wo-moo-title{background:var(--ink);color:#fff;padding:8px 12px;border-radius:8px;font-weight:700;font-size:14.5px;margin-bottom:10px;}
-  .wo-item{border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px;background:var(--surface);break-inside:avoid;page-break-inside:avoid;}
+  .wo-page{margin-bottom:10px;}
+  .wo-grid{display:grid;grid-template-columns:1fr;gap:10px;}
+  .wo-item{border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--surface);break-inside:avoid;page-break-inside:avoid;}
   .wo-item-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;}
   .wo-status{font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;white-space:nowrap;}
   .wo-table{width:100%;border-collapse:collapse;font-size:12.5px;}
   .wo-table th{text-align:left;width:38%;padding:4px 6px 4px 0;color:var(--ink-soft);font-weight:600;vertical-align:top;}
   .wo-table td{padding:4px 0;vertical-align:top;}
   .wo-table tr{border-bottom:1px solid #F0F2F5;}
+  .wo-note{margin-top:8px;padding:8px 10px;border-radius:8px;background:#F3E4D3;border:1px solid #B4763B;color:#6E4519;font-size:12px;font-weight:600;}
   .wo-qr-row{display:flex;gap:12px;align-items:flex-start;margin-top:12px;padding-top:10px;border-top:1px dashed var(--line);}
   .wo-qr{text-align:center;}
   .wo-qr-cap{font-size:10px;color:var(--ink-soft);margin-top:4px;max-width:110px;}
@@ -193,16 +197,22 @@
   .wo-sign-line{border-bottom:1px dotted var(--ink-soft);margin:0 10px;}
   .wo-sign-cap{font-size:11px;color:var(--ink-soft);margin-top:4px;}
   @media print{
+    @page{size:A4 portrait;margin:10mm;}
     .wo-moo-title{background:#1B2430 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
-    .wo-item{border:1px solid #999;}
-    #woSheet{font-size:11.5px;}
-    /* 4 รายการต่อ 1 หน้ากระดาษ */
-    .wo-item.wo-pagebreak{page-break-after:always;break-after:page;}
-    .wo-item{margin-bottom:8px;padding:9px;}
-    .wo-qr-row{margin-top:8px;padding-top:7px;}
-    .wo-table{font-size:11px;}
-    .wo-table th,.wo-table td{padding:2px 4px 2px 0;}
-    .wo-moo{margin-bottom:10px;}
+    .wo-note{background:#F3E4D3 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    .wo-item{border:1px solid #999;padding:8px;}
+    #woSheet{font-size:11px;}
+    /* 2 คอลัมน์ ไล่จากซ้ายไปขวา แล้วขึ้นแถวใหม่ */
+    .wo-grid{grid-template-columns:1fr 1fr;gap:7px;}
+    /* 4 รายการ (2x2) ต่อ 1 หน้า */
+    .wo-page{page-break-after:always;break-after:page;}
+    .wo-page:last-child{page-break-after:auto;break-after:auto;}
+    .wo-moo{margin-bottom:0;}
+    .wo-table{font-size:10px;}
+    .wo-table th,.wo-table td{padding:1.5px 4px 1.5px 0;}
+    .wo-qr-row{margin-top:7px;padding-top:6px;gap:8px;}
+    .wo-sign{padding-top:18px;}
+    .wo-note{font-size:10.5px;padding:5px 7px;}
   }
   .toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 18px;border-radius:24px;font-size:13px;z-index:60;opacity:0;transition:opacity .2s;pointer-events:none;}
   .toast.show{opacity:1;}
@@ -856,6 +866,72 @@ function exportUTMCsv(){
   alert('ส่งออก CSV สำเร็จ ('+n+' เสา)\n\nใช้คำสั่ง MAPIMPORT หรือ Civil 3D นำเข้าจุดได้');
 }
 
+/* ============ สำรองข้อมูลอัตโนมัติ ============ */
+const BK_PREFIX='bk:';
+const AUTO_BK_KEEP=7;                    // เก็บย้อนหลังกี่ชุด
+const AUTO_BK_INTERVAL=12*60*60*1000;    // ทุก 12 ชั่วโมง
+
+function backupPayload(){
+  return {app:'lamp-registry',version:1,exportedAt:new Date().toISOString(),
+    points:POINTS,repairs:REPAIRS,inventory:INV,transactions:TX};
+}
+/* ลดขนาด: ตัดรูป base64 ออกจากชุดสำรองอัตโนมัติ (รูปบน Storage เก็บเป็นลิงก์อยู่แล้ว) */
+function slimForAuto(data){
+  const strip=arr=>(arr||[]).map(o=>{
+    if(!o.photos||!o.photos.length)return o;
+    const keep=o.photos.filter(u=>!isDataUrl(u));
+    return {...o,photos:keep,_photosDropped:o.photos.length-keep.length||undefined};
+  });
+  return {...data,points:strip(data.points),repairs:strip(data.repairs)};
+}
+async function listBackups(){
+  try{
+    const l=await DB.list(BK_PREFIX,true);
+    return (l&&l.keys?l.keys:[]).sort().reverse();
+  }catch(e){return [];}
+}
+async function runAutoBackup(force){
+  if(DB_MODE!=='firebase'&&!force)return {skipped:'ต้องเชื่อมคลาวด์ก่อน'};
+  const now=Date.now();
+  const lastRaw=localStorage.getItem('lampreg:lastAutoBk');
+  const last=lastRaw?+lastRaw:0;
+  if(!force&&now-last<AUTO_BK_INTERVAL)return {skipped:'ยังไม่ถึงรอบ'};
+  if(!POINTS.length&&!REPAIRS.length)return {skipped:'ไม่มีข้อมูล'};
+
+  const stamp=new Date().toISOString().replace(/[:.]/g,'-');
+  const key=BK_PREFIX+stamp;
+  let payload=slimForAuto(backupPayload());
+  let json=JSON.stringify(payload);
+  // ถ้าใหญ่เกิน 1 เอกสาร ให้ตัดสิ่งที่ไม่จำเป็นออก
+  if(docSize(payload)>DOC_LIMIT){
+    payload={...payload,points:payload.points.map(p=>({...p,photos:[]}))};
+    json=JSON.stringify(payload);
+  }
+  if(json.length>DOC_LIMIT)return {error:'ข้อมูลใหญ่เกินกว่าจะสำรองอัตโนมัติ · กรุณาสำรองเป็นไฟล์'};
+
+  try{
+    await DB.set(key,json,true);
+    localStorage.setItem('lampreg:lastAutoBk',String(now));
+    // ลบชุดเก่าเกินโควตา
+    const all=await listBackups();
+    for(const k of all.slice(AUTO_BK_KEEP)){try{await DB.delete(k,true);}catch(e){}}
+    return {ok:true,key,kept:Math.min(all.length,AUTO_BK_KEEP),size:json.length};
+  }catch(e){return {error:e.message||String(e)};}
+}
+async function restoreFromAuto(key){
+  if(!confirm('กู้คืนจากชุดสำรอง\n'+key.replace(BK_PREFIX,'')+'\n\nข้อมูลปัจจุบันทั้งหมดจะถูกแทนที่'))return;
+  let data;
+  try{const r=await DB.get(key,true);data=JSON.parse(r.value);}
+  catch(e){alert('อ่านชุดสำรองไม่สำเร็จ: '+(e.message||e));return;}
+  const blob=new Blob([JSON.stringify(data)],{type:'application/json'});
+  importBackup(new File([blob],'auto-backup.json',{type:'application/json'}));
+}
+function fmtBkKey(k){
+  const iso=k.replace(BK_PREFIX,'').replace(/-(\d{2})-(\d{2})-(\d{3})Z$/,':$1:$2.$3Z');
+  const d=new Date(iso);
+  return isNaN(d)?k:fmtDate(d.toISOString());
+}
+
 /* repair duration in days (created -> done) */
 function repairDays(r){
   if(r.status!=='done')return null;
@@ -880,6 +956,7 @@ const STATUSES=[
   {k:'pending',label:'รอรับเรื่อง',cls:'st-pending',c:'#8E5BD8'},
   {k:'new',label:'รับเรื่อง',cls:'st-new',c:'#C94C4C'},
   {k:'check',label:'ตรวจสอบ',cls:'st-check',c:'#E0872B'},
+  {k:'waiting',label:'รอวัสดุอุปกรณ์',cls:'st-waiting',c:'#B4763B'},
   {k:'progress',label:'อยู่ระหว่างดำเนินงาน',cls:'st-progress',c:'#3FA7B5'},
   {k:'done',label:'เสร็จสิ้น',cls:'st-done',c:'#3E9E6B'}
 ];
@@ -1104,9 +1181,9 @@ function renderDashboard(){
   const totalLamps=POINTS.reduce((s,p)=>s+lampCount(p),0);
   const byType={sodium:0,metal:0,led:0,other:0};
   POINTS.forEach(p=>{byType[p.lampType]=(byType[p.lampType]||0)+lampCount(p);});
-  const stCount={pending:0,new:0,check:0,progress:0,done:0};
+  const stCount={pending:0,new:0,check:0,waiting:0,progress:0,done:0};
   visibleRepairs().forEach(r=>{stCount[r.status]=(stCount[r.status]||0)+1;});
-  const openRep=stCount.new+stCount.check+stCount.progress;
+  const openRep=stCount.new+stCount.check+(stCount.waiting||0)+stCount.progress;
   const pend=pendingCount();
   const avgDays=avgRepairDays(REPAIRS);
   const maxType=Math.max(1,...Object.values(byType));
@@ -1142,7 +1219,7 @@ function renderDashboard(){
           </div>`).join('')}
       </div>
 
-      <a class="btn btn-primary btn-block edit-only" href="#/workorder" style="margin-top:14px">🧰 ใบสั่งงานช่าง · ${REPAIRS.filter(r=>['new','check','progress'].includes(r.status)).length} งานค้าง</a>
+      <a class="btn btn-primary btn-block edit-only" href="#/workorder" style="margin-top:14px">🧰 ใบสั่งงานช่าง · ${REPAIRS.filter(r=>['new','check','waiting','progress'].includes(r.status)).length} งานค้าง</a>
       <a class="btn btn-outline btn-block edit-only" href="#/report" style="margin-top:8px">📄 รายงานสรุป · สรุปการซ่อมรายเดือน</a>
       <a class="btn btn-outline btn-block" href="#/inventory" style="margin-top:8px">📦 คลังวัสดุ · คงเหลือ ${INV.reduce((s,it)=>s+itemStats(it.id).remaining,0)} · ขาด ${INV.reduce((s,it)=>s+Math.max(0,(+it.needed||0)-itemStats(it.id).remaining),0)}</a>
 
@@ -1163,7 +1240,20 @@ function renderDashboard(){
           <a class="btn btn-outline btn-sm" href="#/storage">☁️ คลาวด์</a>
           </div>
           <input type="file" id="importFile" accept="application/json,.json" style="display:none" onchange="if(this.files[0]){importBackup(this.files[0]);this.value='';}">
-          <div style="font-size:11px;color:var(--ink-soft);margin-top:8px">แนะนำสำรองข้อมูลเก็บไว้เป็นระยะ · การกู้คืนจะแทนที่ข้อมูลปัจจุบันทั้งหมด</div>
+          <div style="font-size:11px;color:var(--ink-soft);margin-top:8px">การกู้คืนจะแทนที่ข้อมูลปัจจุบันทั้งหมด</div>
+        </div>
+
+        <div class="section-label">สำรองอัตโนมัติบนคลาวด์</div>
+        <div class="stat" style="padding:14px">
+          <div style="font-size:12.5px;color:var(--ink-soft);line-height:1.7">
+            ระบบสำรองข้อมูลขึ้นคลาวด์ให้เองทุก 12 ชั่วโมง เก็บย้อนหลัง ${AUTO_BK_KEEP} ชุด<br>
+            <span style="font-size:11px">(ชุดอัตโนมัติไม่รวมรูปที่ฝังในข้อมูล เพื่อลดขนาด)</span>
+          </div>
+          <div class="action-row" style="margin-top:10px">
+            <button class="btn btn-outline btn-sm" id="bk_now">💾 สำรองเดี๋ยวนี้</button>
+            <button class="btn btn-outline btn-sm" id="bk_refresh">🔄 ดูรายการ</button>
+          </div>
+          <div id="bkList" style="margin-top:10px;font-size:12.5px">กำลังโหลด...</div>
         </div>
       </div>
 
@@ -1172,6 +1262,33 @@ function renderDashboard(){
     </div>
     <button class="fab edit-only" onclick="location.hash='#/new'">+</button>
   `;
+  // ---- สำรองอัตโนมัติ ----
+  const bkList=document.getElementById('bkList');
+  async function drawBk(){
+    if(!bkList)return;
+    if(DB_MODE!=='firebase'){bkList.innerHTML='<span style="color:var(--danger)">ต้องเชื่อมคลาวด์ก่อนจึงจะสำรองอัตโนมัติได้</span>';return;}
+    bkList.innerHTML='กำลังโหลด...';
+    const keys=await listBackups();
+    if(!keys.length){bkList.innerHTML='<span style="color:var(--ink-soft)">ยังไม่มีชุดสำรอง</span>';return;}
+    bkList.innerHTML=keys.map(k=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-top:1px solid var(--line)">
+      <span class="mono" style="font-size:11.5px">${esc(fmtBkKey(k))}</span>
+      <button class="btn btn-outline btn-sm" data-bk="${esc(k)}" style="padding:4px 9px;font-size:11px">กู้คืน</button>
+    </div>`).join('');
+    bkList.querySelectorAll('[data-bk]').forEach(b=>b.onclick=()=>restoreFromAuto(b.dataset.bk));
+  }
+  if(bkList)drawBk();
+  const bkNow=document.getElementById('bk_now');
+  if(bkNow)bkNow.onclick=async()=>{
+    bkNow.disabled=true;bkNow.textContent='กำลังสำรอง...';
+    const r=await runAutoBackup(true);
+    bkNow.disabled=false;bkNow.textContent='💾 สำรองเดี๋ยวนี้';
+    if(r.ok)toast('สำรองแล้ว ('+Math.round(r.size/1024)+' KB)');
+    else alert('สำรองไม่สำเร็จ: '+(r.error||r.skipped));
+    drawBk();
+  };
+  const bkRef=document.getElementById('bk_refresh');
+  if(bkRef)bkRef.onclick=drawBk;
+
   const recent=[...visibleRepairs()].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||'')).slice(0,4);
   const gd=document.getElementById('gpsDiag');
   if(gd){
@@ -1225,13 +1342,13 @@ function renderList(){
       <div class="toolbar"><input type="text" id="q" placeholder="🔍 ค้นหาชื่อซอย / จุด..." value="${esc(LS.q)}"></div>
             <div class="toolbar">
         <select id="fmoo" style="flex:1">
-          <option value="">① ทุกหมู่</option>
+          <option value="">ทุกหมู่</option>
           ${moos.map(g=>`<option value="${esc(g)}" ${g===LS.moo?'selected':''}>${esc(g)}</option>`).join('')}
         </select>
       </div>
       <div class="toolbar">
         <select id="fsoi" style="flex:1" ${!LS.moo?'':''}>
-          <option value="">② ${LS.moo?'ทุกซอยใน'+esc(LS.moo):'ทุกซอย'}</option>
+          <option value="">${LS.moo?'ทุกซอยใน'+esc(LS.moo):'ทุกซอย'}</option>
           ${soisInMoo.map(n=>`<option value="${esc(n)}" ${n===LS.soi?'selected':''}>${esc(n)}</option>`).join('')}
         </select>
         <select id="ft"><option value="">ทุกประเภท</option><option value="sodium" ${LS.type==='sodium'?'selected':''}>โซเดียม</option><option value="metal" ${LS.type==='metal'?'selected':''}>เมทัลฮาไลค์</option><option value="led" ${LS.type==='led'?'selected':''}>LED</option><option value="other" ${LS.type==='other'?'selected':''}>อื่นๆ</option></select>
@@ -1256,7 +1373,6 @@ function renderList(){
   document.getElementById('fmoo').onchange=e=>{LS.moo=e.target.value;LS.soi='';renderList();};
   document.getElementById('fsoi').onchange=e=>{LS.soi=e.target.value;renderList();};
   document.getElementById('ft').onchange=e=>{LS.type=e.target.value;renderList();};
-  makeSearchableAll(document,['fsoi'],'🔍 ค้นหาซอยในหมู่นี้...');
 }
 
 /* ============ detail ============ */
@@ -2333,7 +2449,7 @@ function renderWorkOrder(){
   if(!EDIT_MODE){toast('ต้องใส่ PIN ก่อน');location.hash='#/dashboard';return;}
   const app=document.getElementById('app');
   // งานที่ต้องซ่อม = รับเรื่องแล้ว ยังไม่เสร็จ (ไม่รวม pending ที่ยังไม่รับเรื่อง)
-  const jobs=REPAIRS.filter(r=>['new','check','progress'].includes(r.status));
+  const jobs=REPAIRS.filter(r=>['new','check','waiting','progress'].includes(r.status));
   // จัดกลุ่มตามหมู่
   const groups={};
   jobs.forEach(r=>{
@@ -2368,10 +2484,16 @@ function renderWorkOrder(){
           <div style="font-size:12.5px;color:var(--ink-soft);margin-top:2px">เทศบาลตำบลห้วยใหญ่ · พิมพ์วันที่ ${today} · งานค้างทั้งหมด ${jobs.length} รายการ</div>
         </div>
         ${!jobs.length?'<div class="empty"><div class="big">✅</div>ไม่มีงานค้าง</div>':''}
-        ${keys.map(k=>`
+        ${keys.map(k=>{
+          const chunks=[];
+          for(let c=0;c<groups[k].items.length;c+=4)chunks.push(groups[k].items.slice(c,c+4));
+          return chunks.map((chunk,ci)=>`
+          <div class="wo-page">
           <div class="wo-moo">
-            <div class="wo-moo-title">${esc(k)} <span style="font-weight:400;font-size:12px">(${groups[k].items.length} งาน)</span></div>
-            ${groups[k].items.map(({r,p},i)=>{
+            <div class="wo-moo-title">${esc(k)} <span style="font-weight:400;font-size:12px">(${groups[k].items.length} งาน${chunks.length>1?` · หน้า ${ci+1}/${chunks.length}`:''})</span></div>
+            <div class="wo-grid">
+            ${chunk.map(({r,p},ii)=>{
+              const i=ci*4+ii;
               const sm=statusMeta(r.status);
               const pole=(p&&r.poleId)?(p.poles||[]).find(x=>x.id===r.poleId):null;
               const photos=(r.photos||[]).filter(Boolean);
@@ -2394,6 +2516,7 @@ function renderWorkOrder(){
                   <tr><th>รายละเอียด</th><td>${esc(r.desc||'-')}</td></tr>
                   <tr><th>ผู้แจ้งจาก</th><td>${r.source==='public'?'ประชาชนแจ้งผ่าน QR':'เจ้าหน้าที่'}</td></tr>
                 </table>
+                ${r.status==='waiting'?`<div class="wo-note">📦 หมายเหตุ: รอวัสดุอุปกรณ์ · ยังไม่สามารถดำเนินการซ่อมได้จนกว่าจะได้รับวัสดุ</div>`:''}
 
                 <div class="wo-qr-row">
                   <div class="wo-qr">
@@ -2410,13 +2533,12 @@ function renderWorkOrder(){
                   </div>
                 </div>
               </div>`;}).join('')}
-          </div>`).join('')}
+            </div>
+          </div>
+          </div>`).join('');
+        }).join('')}
       </div>
     </div>`;
-
-  // 4 รายการต่อหน้ากระดาษ
-  const items=[...document.querySelectorAll('#woSheet .wo-item')];
-  items.forEach((el,i)=>{ if((i+1)%4===0 && i!==items.length-1) el.classList.add('wo-pagebreak'); });
 
   // สร้าง QR
   jobs.forEach(r=>{
@@ -3419,6 +3541,8 @@ window.addEventListener('hashchange',render);
   await initDB();
   await loadAll();
   render();
+  // สำรองอัตโนมัติเบื้องหลัง (ไม่ขวางการใช้งาน)
+  setTimeout(()=>{runAutoBackup().then(r=>{if(r&&r.ok)console.log('auto backup ok',r.key);});},4000);
 })();
 </script>
 </body>
