@@ -171,8 +171,11 @@
   .qr-cell .cap{font-size:11px;font-weight:600;margin-top:6px;}
   .qr-cell .sub{font-size:10px;color:var(--ink-soft);}
   @media print{
-    .navbar,.fab,.topbar,.section-label,.no-print{display:none!important;}
-    body{padding:0;background:#fff;}
+    .navbar,.fab,.topbar,.section-label,.no-print,#cloudWarn,#lockChip{display:none!important;}
+    html,body{padding:0!important;margin:0!important;background:#fff!important;height:auto!important;overflow:visible!important;}
+    /* กันเนื้อหาถูกตัด: ปล่อยให้ทุกกล่องยืดเต็มและไหลข้ามหน้าได้ */
+    #app,.content,.report-sheet,#woSheet{height:auto!important;max-height:none!important;overflow:visible!important;position:static!important;padding:0!important;margin:0!important;}
+    *{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
     .qr-grid{grid-template-columns:1fr 1fr 1fr;}
     .qr-cell{break-inside:avoid;}
   }
@@ -222,6 +225,11 @@
   #lockChip{position:fixed;top:12px;right:12px;z-index:45;display:inline-flex;align-items:center;gap:5px;padding:7px 12px;border-radius:22px;font-size:11.5px;font-weight:700;cursor:pointer;background:rgba(255,255,255,.16);color:#fff;backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,.25);}
   #lockChip.unlocked{background:var(--sodium);color:var(--ink);border-color:var(--sodium);}
   body.viewonly .edit-only{display:none!important;}
+  .print-sheet{background:#fff;}
+  @media print{
+    .print-sheet{font-size:12px;}
+    #printMap{height:400px!important;page-break-inside:avoid;}
+  }
   @media print{#lockChip{display:none!important;}}
 </style>
 </head>
@@ -974,6 +982,33 @@ function poleLampLabel(p,pole){
 function poleColor(p,pole){return typeColor(pole.lampType||p.lampType);}
 /* จำนวนโคม: อิงตามจำนวนเสาที่ปักไว้ ถ้ายังไม่มีเสาจึงใช้ค่าที่กรอกเอง */
 function lampCount(p){const n=(p.poles||[]).length;return n>0?n:(+p.count||0);}
+/* ระยะทางระหว่างพิกัด (เมตร) - Haversine */
+function distMeters(lat1,lng1,lat2,lng2){
+  const R=6371000,r=Math.PI/180;
+  const dLa=(lat2-lat1)*r,dLo=(lng2-lng1)*r;
+  const x=Math.sin(dLa/2)**2+Math.cos(lat1*r)*Math.cos(lat2*r)*Math.sin(dLo/2)**2;
+  return 2*R*Math.asin(Math.sqrt(x));
+}
+/* ช่วงระยะห่างระหว่างเสาที่มีพิกัด (เรียงตามลำดับที่บันทึก) */
+function poleSpans(p){
+  const g=(p.poles||[]).filter(x=>x.lat&&x.lng);
+  const spans=[];let total=0;
+  for(let i=0;i<g.length-1;i++){
+    const d=distMeters(+g[i].lat,+g[i].lng,+g[i+1].lat,+g[i+1].lng);
+    spans.push({from:i,to:i+1,d,a:g[i],b:g[i+1]});
+    total+=d;
+  }
+  return {spans,total,count:g.length};
+}
+function fmtDist(m){return m<1000?Math.round(m)+' ม.':(m/1000).toFixed(2)+' กม.';}
+/* เปลี่ยนเลขเสาที่ใช้รูปแบบ "เสาต้นที่ N" ให้ตรงลำดับใหม่ · เสาที่ตั้งชื่อเองไม่แตะ */
+function renumberPoles(p){
+  (p.poles||[]).forEach((pole,i)=>{
+    if(!pole.label || /^เสาต้นที่\s*\d+$/.test(pole.label.trim())){
+      pole.label='เสาต้นที่ '+(i+1);
+    }
+  });
+}
 /* สรุปหลอดแยกขนาดในซอย */
 function poleBreakdown(p){
   const m={};(p.poles||[]).forEach(pole=>{const k=poleLampLabel(p,pole);m[k]=(m[k]||0)+1;});
@@ -1119,6 +1154,194 @@ function makeSearchable(sel,placeholder){
 /* เรียกใช้กับหลาย select พร้อมกัน */
 function makeSearchableAll(root,ids,placeholder){
   ids.forEach(id=>{const el=(root||document).querySelector('#'+id);if(el)makeSearchable(el,placeholder);});
+}
+
+/* ============ เลือกพิมพ์แผนที่/รายการเสา แบบเลือกหมู่-ซอยได้ ============ */
+function openPrintSelect(){
+  const mooOf=p=>p.moo||p.group||'ไม่ระบุ';
+  const moos={};
+  POINTS.forEach(p=>{const k=mooOf(p);(moos[k]=moos[k]||[]).push(p);});
+  const keys=Object.keys(moos).sort((a,b)=>{
+    const na=parseInt(String(a).replace(/\D/g,''))||999,nb=parseInt(String(b).replace(/\D/g,''))||999;
+    return na-nb||a.localeCompare(b,'th');
+  });
+  if(!keys.length){alert('ยังไม่มีข้อมูลจุดติดตั้ง');return;}
+
+  const wrap=document.createElement('div');
+  wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:75;display:flex;align-items:flex-end;justify-content:center;';
+  wrap.innerHTML=`<div style="background:#fff;width:100%;max-width:760px;border-radius:18px 18px 0 0;padding:20px 16px 24px;max-height:92vh;overflow:auto">
+    <div style="font-weight:700;font-size:16px;margin-bottom:2px">เลือกพิมพ์แผนผังเสาไฟ</div>
+    <div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:14px">เลือกหมู่และซอยที่ต้องการ · ติ๊กหมู่เพื่อเลือกทุกซอย หรือเลือกเฉพาะบางซอย</div>
+
+    <div class="action-row" style="margin-top:0;margin-bottom:12px">
+      <button class="btn btn-outline btn-sm" id="ps_all">เลือกทั้งหมด</button>
+      <button class="btn btn-outline btn-sm" id="ps_none">ล้างทั้งหมด</button>
+    </div>
+
+    <div id="ps_tree" style="border:1px solid var(--line);border-radius:12px;padding:6px;max-height:44vh;overflow:auto;margin-bottom:14px">
+      ${keys.map(k=>{
+        const sois=moos[k].slice().sort((a,b)=>(a.pointName||'').localeCompare(b.pointName||'','th'));
+        return `<div class="ps-moo" style="border-bottom:1px solid var(--bg);padding:6px 4px">
+          <label style="display:flex;align-items:center;gap:9px;font-weight:700;font-size:14px;padding:6px 4px">
+            <input type="checkbox" class="ps-mck" data-moo="${esc(k)}" style="width:19px;height:19px">
+            <span>${esc(k)} <span style="font-weight:400;color:var(--ink-soft);font-size:12px">(${sois.length} ซอย)</span></span>
+          </label>
+          <div style="padding-left:30px">
+            ${sois.map(p=>`<label style="display:flex;align-items:center;gap:9px;font-size:13px;padding:5px 4px">
+              <input type="checkbox" class="ps-sck" data-moo="${esc(k)}" value="${p.id}" style="width:17px;height:17px">
+              <span>${esc(p.pointName||'(ไม่มีชื่อ)')} <span style="color:var(--ink-soft);font-size:11.5px">· ${(p.poles||[]).filter(x=>x.lat&&x.lng).length} ต้น</span></span>
+            </label>`).join('')}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+
+    <div class="field"><label>รูปแบบการพิมพ์</label>
+      <select id="ps_mode" style="width:100%;padding:11px 13px;border-radius:10px;border:1px solid var(--line);font-size:15px">
+        <option value="both">แผนที่ + รายการเสา (พร้อมระยะห่าง)</option>
+        <option value="map">แผนที่อย่างเดียว</option>
+        <option value="list">รายการเสา + ระยะห่าง อย่างเดียว</option>
+      </select>
+    </div>
+    <label style="display:flex;align-items:center;gap:9px;font-size:13px;margin:4px 0 16px">
+      <input type="checkbox" id="ps_sat" style="width:17px;height:17px"> ใช้ภาพถ่ายดาวเทียมเป็นพื้นหลังแผนที่
+    </label>
+
+    <div class="action-row">
+      <button class="btn btn-outline" id="ps_cancel">ยกเลิก</button>
+      <button class="btn btn-primary" id="ps_go">🖨️ สร้างหน้าพิมพ์</button>
+    </div>
+  </div>`;
+  document.body.appendChild(wrap);
+  const close=()=>wrap.remove();
+  wrap.onclick=e=>{if(e.target===wrap)close();};
+  wrap.querySelector('#ps_cancel').onclick=close;
+
+  // ติ๊กหมู่ = ติ๊กทุกซอยในหมู่
+  wrap.querySelectorAll('.ps-mck').forEach(mck=>{
+    mck.onchange=()=>{
+      wrap.querySelectorAll(`.ps-sck[data-moo="${CSS.escape(mck.dataset.moo)}"]`).forEach(s=>s.checked=mck.checked);
+    };
+  });
+  // ถ้าติ๊กซอยครบทุกอันในหมู่ ให้ติ๊กหมู่ด้วย
+  wrap.querySelectorAll('.ps-sck').forEach(sck=>{
+    sck.onchange=()=>{
+      const moo=sck.dataset.moo;
+      const all=[...wrap.querySelectorAll(`.ps-sck[data-moo="${CSS.escape(moo)}"]`)];
+      const mck=wrap.querySelector(`.ps-mck[data-moo="${CSS.escape(moo)}"]`);
+      if(mck)mck.checked=all.every(x=>x.checked);
+    };
+  });
+  wrap.querySelector('#ps_all').onclick=()=>wrap.querySelectorAll('input[type=checkbox]').forEach(c=>{if(c.id!=='ps_sat')c.checked=true;});
+  wrap.querySelector('#ps_none').onclick=()=>wrap.querySelectorAll('input[type=checkbox]').forEach(c=>{if(c.id!=='ps_sat')c.checked=false;});
+
+  wrap.querySelector('#ps_go').onclick=()=>{
+    const ids=[...wrap.querySelectorAll('.ps-sck:checked')].map(c=>c.value);
+    if(!ids.length){toast('เลือกอย่างน้อย 1 ซอย');return;}
+    const mode=wrap.querySelector('#ps_mode').value;
+    const sat=wrap.querySelector('#ps_sat').checked;
+    close();
+    renderPrintMap(ids,mode,sat);
+  };
+}
+
+function renderPrintMap(ids,mode,useSat){
+  const sel=POINTS.filter(p=>ids.includes(p.id));
+  const app=document.getElementById('app');
+  const today=new Date().toLocaleDateString('th-TH',{day:'numeric',month:'long',year:'numeric'});
+  const totalPoles=sel.reduce((s,p)=>s+(p.poles||[]).filter(x=>x.lat&&x.lng).length,0);
+
+  // จัดกลุ่มตามหมู่
+  const mooOf=p=>p.moo||p.group||'ไม่ระบุ';
+  const byMoo={};sel.forEach(p=>{(byMoo[mooOf(p)]=byMoo[mooOf(p)]||[]).push(p);});
+  const mkeys=Object.keys(byMoo).sort((a,b)=>{
+    const na=parseInt(String(a).replace(/\D/g,''))||999,nb=parseInt(String(b).replace(/\D/g,''))||999;return na-nb;});
+
+  const listHtml=mkeys.map(k=>`
+    <div style="margin-bottom:14px;break-inside:avoid">
+      <div style="font-weight:700;font-size:14px;background:#1B2430;color:#fff;padding:6px 10px;border-radius:6px;margin-bottom:8px">${esc(k)}</div>
+      ${byMoo[k].map(p=>{
+        const sp=poleSpans(p);
+        const poles=(p.poles||[]).filter(x=>x.lat&&x.lng);
+        return `<div style="margin-bottom:10px;padding:8px 10px;border:1px solid #ccc;border-radius:8px;break-inside:avoid">
+          <div style="font-weight:700;font-size:13.5px">${esc(p.pointName||'-')} <span style="font-weight:400;color:#666;font-size:12px">· ${esc(lampLabel(p))} · ${poles.length} ต้น</span></div>
+          ${sp.count>=2?`<div style="font-size:12.5px;color:#333;margin:3px 0">ระยะแนวเสา (ต้นแรก → ต้นสุดท้าย): <b>${fmtDist(sp.total)}</b></div>`:'<div style="font-size:11.5px;color:#999">มีเสาที่มีพิกัดน้อยกว่า 2 ต้น</div>'}
+          ${p.meterNo||p.transformerNo?`<div style="font-size:11px;color:#666;margin-top:3px">มิเตอร์: ${esc(p.meterNo||'-')} · หม้อแปลง: ${esc(p.transformerNo||'-')}</div>`:''}
+        </div>`;
+      }).join('')}
+    </div>`).join('');
+
+  app.innerHTML=`
+    <div class="topbar no-print">
+      <a class="back-link" href="#/map">‹ กลับแผนที่</a>
+      <h1>หน้าพิมพ์แผนผัง</h1>
+      <p>${sel.length} ซอย · ${totalPoles} เสา</p>
+    </div>
+    <div class="content">
+      <div class="action-row no-print" style="margin-top:0;margin-bottom:14px">
+        <button class="btn btn-primary" onclick="doPrint()">🖨️ พิมพ์ / บันทึก PDF</button>
+        <button class="btn btn-outline" onclick="openPrintSelect()">เลือกใหม่</button>
+      </div>
+
+      <div class="print-sheet">
+        <div style="text-align:center;border-bottom:2px solid #1B2430;padding-bottom:10px;margin-bottom:14px">
+          <div style="font-weight:800;font-size:17px">แผนผังตำแหน่งเสาไฟฟ้าสาธารณะ</div>
+          <div style="font-size:12.5px;color:#555;margin-top:2px">เทศบาลตำบลห้วยใหญ่ · พิมพ์ ${today} · ${sel.length} ซอย · ${totalPoles} เสา</div>
+        </div>
+        ${mode!=='list'?`<div id="printMap" style="width:100%;height:440px;border:1px solid #999;border-radius:8px;margin-bottom:16px"></div>`:''}
+        ${mode!=='map'?listHtml:''}
+      </div>
+    </div>`;
+
+  if(mode!=='list'){
+    setTimeout(()=>{
+      const el=document.getElementById('printMap');if(!el)return;
+      const pm=L.map(el,{zoomControl:true,attributionControl:false});
+      const tile=useSat
+        ?L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19})
+        :L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19});
+      tile.addTo(pm);
+      const all=[];
+      sel.forEach(p=>{
+        const col=typeColor(p.lampType);
+        const poles=(p.poles||[]).filter(x=>x.lat&&x.lng);
+        const line=[];
+        poles.forEach((pole,i)=>{
+          const c=poleColor(p,pole);
+          const icon=L.divIcon({className:'',html:`<div style="width:18px;height:18px;border-radius:50%;background:${c};color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.4)">${i+1}</div>`,iconSize:[18,18],iconAnchor:[9,9]});
+          L.marker([+pole.lat,+pole.lng],{icon}).addTo(pm).bindTooltip(esc(p.pointName)+' #'+(i+1),{permanent:false});
+          line.push([+pole.lat,+pole.lng]);all.push([+pole.lat,+pole.lng]);
+        });
+        if(line.length>1){
+          L.polyline(line,{color:'#E01B24',weight:3,opacity:.9}).addTo(pm);
+          // ป้ายระยะรวมต้นแรก-สุดท้าย วางที่กึ่งกลางแนวเสา
+          let tot=0;for(let i=0;i<line.length-1;i++)tot+=distMeters(line[i][0],line[i][1],line[i+1][0],line[i+1][1]);
+          const mid=line[Math.floor(line.length/2)];
+          L.marker(mid,{icon:L.divIcon({className:'',html:`<div style="background:#fff;border:1px solid #E01B24;color:#111;font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px;white-space:nowrap">รวม ${Math.round(tot)} ม.</div>`,iconSize:[1,1]})}).addTo(pm);
+        }
+        if(poles.length===0&&p.lat&&p.lng){
+          L.circleMarker([+p.lat,+p.lng],{radius:7,color:col,fillColor:col,fillOpacity:.8}).addTo(pm).bindTooltip(esc(p.pointName));
+          all.push([+p.lat,+p.lng]);
+        }
+      });
+      if(all.length>1)pm.fitBounds(all,{padding:[30,30]});
+      else if(all.length===1)pm.setView(all[0],17);
+      else pm.setView([12.9236,100.8825],13);
+      setTimeout(()=>pm.invalidateSize(),200);
+    },80);
+  }
+}
+
+/* ============ พิมพ์ (แก้ปัญหา iOS Safari กดแล้วไม่ขึ้น) ============ */
+function doPrint(){
+  // ปิดแป้นพิมพ์/โฟกัสที่อาจบล็อกการพิมพ์บน iOS
+  if(document.activeElement&&document.activeElement.blur)document.activeElement.blur();
+  // ให้เบราว์เซอร์ render เสร็จก่อน แล้วค่อยสั่งพิมพ์
+  toast('กำลังเตรียมพิมพ์...');
+  setTimeout(()=>{
+    try{ window.print(); }
+    catch(e){ alert('เบราว์เซอร์ไม่รองรับการพิมพ์อัตโนมัติ\n\nกรุณาใช้เมนู แชร์ → พิมพ์ ของเบราว์เซอร์แทน'); }
+  },350);
 }
 
 /* ============ router ============ */
@@ -1421,7 +1644,7 @@ function renderDetail(id){
         ${p.note?`<div class="note-box">${esc(p.note)}</div>`:''}
         <div class="qr-wrap"><div id="qrcode"></div><div class="qr-caption">สแกนเพื่อเปิดข้อมูลจุดนี้โดยตรง</div></div>
         <div class="action-row">
-          <button class="btn btn-outline btn-sm" onclick="window.print()">🖨️ พิมพ์ QR</button>
+          <button class="btn btn-outline btn-sm" onclick="doPrint()">🖨️ พิมพ์ QR</button>
           <a class="btn btn-outline btn-sm edit-only" href="#/edit/${p.id}">✏️ แก้ไข</a>
           <button class="btn btn-danger btn-sm edit-only" id="del">ลบ</button>
         </div>
@@ -1431,6 +1654,11 @@ function renderDetail(id){
       <div class="hint" style="margin-bottom:14px">พบไฟดับ/ชำรุดที่ซอยนี้ กดปุ่มด้านบนเพื่อแจ้งเจ้าหน้าที่</div>
 
       <div class="section-label">เสาไฟในซอยนี้ (${(p.poles||[]).length} ต้น)</div>
+      ${(()=>{const sp=poleSpans(p);if(sp.count<2)return '';
+        return `<div class="stat" style="padding:11px 13px;margin-bottom:10px">
+          <div style="font-size:12.5px;color:var(--ink-soft)">ระยะแนวเสา (ต้นแรก → ต้นสุดท้าย)</div>
+          <div style="font-weight:700;font-size:16px;margin-top:2px">${fmtDist(sp.total)} <span style="font-size:12px;font-weight:400;color:var(--ink-soft)">· ${sp.count} ต้น</span></div>
+        </div>`;})()}
       <div class="hint edit-only" style="margin-bottom:10px">เดินไปที่เสาแต่ละต้นแล้วกด "เพิ่มเสา (GPS)" เพื่อบันทึกตำแหน่งเป็นรายต้น</div>
       <div id="poleMapWrap"></div>
       <button class="btn btn-outline btn-block edit-only" id="addPole" style="margin-bottom:10px">📍 เพิ่มเสา (ใช้ GPS ตำแหน่งปัจจุบัน)</button>
@@ -1478,6 +1706,7 @@ function renderPoles(p){
   if(!listEl)return;
   if(!poles.length){listEl.innerHTML=`<div class="hint" style="margin-bottom:14px">ยังไม่มีเสาที่บันทึกตำแหน่ง</div>`;}
   else{
+    const withGeo=poles.filter(x=>x.lat&&x.lng);
     listEl.innerHTML=poles.map((pole,i)=>{
       const nav='https://www.google.co.th/maps/dir/?api=1&destination='+pole.lat+','+pole.lng;
       return `<div class="row" style="cursor:default">
@@ -1486,12 +1715,14 @@ function renderPoles(p){
           <div class="meta">${esc(poleLampLabel(p,pole))}</div>
           <div class="meta mono" style="font-size:11px">${esc(pole.lat)}, ${esc(pole.lng)}${pole.acc?(+pole.acc>30?` <span style="color:var(--danger);font-weight:700">±${pole.acc}ม. ⚠</span>`:` ±${pole.acc}ม.`):''}${pole.note?' · '+esc(pole.note):''}</div></div>
         <a class="btn btn-primary btn-sm" style="padding:7px 11px" href="${nav}" target="_blank" rel="noopener">🧭</a>
+        <button class="btn btn-outline btn-sm edit-only" style="padding:7px 9px" data-insertpole="${pole.id}" title="แทรกเสาใหม่ก่อนต้นนี้">⤵️</button>
         <button class="btn btn-outline btn-sm edit-only" style="padding:7px 10px" data-editpole="${pole.id}">✏️</button>
         <button class="btn btn-outline btn-sm edit-only" style="padding:7px 9px" data-delpole="${pole.id}">🗑</button>
       </div>`;}).join('');
     listEl.querySelectorAll('[data-delpole]').forEach(b=>b.onclick=async()=>{
-      if(confirm('ลบเสาต้นนี้?')){p.poles=p.poles.filter(x=>x.id!==b.dataset.delpole);await savePoint(p);toast('ลบแล้ว');renderDetail(p.id);}});
+      if(confirm('ลบเสาต้นนี้?')){p.poles=p.poles.filter(x=>x.id!==b.dataset.delpole);renumberPoles(p);await savePoint(p);toast('ลบแล้ว');renderDetail(p.id);}});
     listEl.querySelectorAll('[data-editpole]').forEach(b=>b.onclick=()=>editPole(p,b.dataset.editpole));
+    listEl.querySelectorAll('[data-insertpole]').forEach(b=>b.onclick=()=>addPoleGPS(p,{insertBeforeId:b.dataset.insertpole}));
   }
   // mini map
   const withGeo=poles.filter(x=>x.lat&&x.lng);
@@ -1920,20 +2151,29 @@ async function addPoleGPS(p,opts){
   }
   if(!g)return;
   const fresh=POINTS.find(x=>x.id===p.id)||p;
-  const nextNo=((fresh.poles||[]).length)+1;
-  // ค่าเริ่มต้น: ใช้ของเสาต้นล่าสุด ถ้าไม่มีก็ใช้ของซอย
-  const last=(fresh.poles||[])[ (fresh.poles||[]).length-1 ];
+  fresh.poles=fresh.poles||[];
+  // ตำแหน่งที่จะแทรก (ถ้าไม่ระบุ = ต่อท้าย)
+  const insertIdx=opts.insertBeforeId
+    ? fresh.poles.findIndex(x=>x.id===opts.insertBeforeId)
+    : fresh.poles.length;
+  const atEnd=(insertIdx<0||insertIdx>=fresh.poles.length);
+  const posNo=(atEnd?fresh.poles.length:insertIdx)+1;   // เลขลำดับที่จะได้
+  const isInsert=!atEnd;
+  // ค่าเริ่มต้น: ใช้ของเสาต้นก่อนหน้าตำแหน่งแทรก ถ้าไม่มีก็ของซอย
+  const refIdx=atEnd?fresh.poles.length-1:Math.max(0,insertIdx-1);
+  const last=fresh.poles[refIdx];
   const src=opts.lastLamp||last||{};
   const defType=src.lampType||fresh.lampType||'sodium';
   const defWatt=src.watt||fresh.watt||'';
   const defOther=src.lampTypeOther||fresh.lampTypeOther||'';
+  const nextNo=posNo;
 
   const wrap=document.createElement('div');
   wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:70;display:flex;align-items:flex-end;justify-content:center;';
   const accWarn=(g.acc&&+g.acc>30);
   wrap.innerHTML=`<div style="background:#fff;width:100%;max-width:760px;border-radius:18px 18px 0 0;padding:20px 16px 24px;max-height:92vh;overflow:auto">
-    <div style="font-weight:700;font-size:16px;margin-bottom:2px">ยืนยันเพิ่มเสาไฟ</div>
-    <div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:14px">${esc(fresh.pointName||'')} · เสาลำดับที่ ${nextNo}</div>
+    <div style="font-weight:700;font-size:16px;margin-bottom:2px">${isInsert?'แทรกเสาไฟ':'ยืนยันเพิ่มเสาไฟ'}</div>
+    <div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:14px">${esc(fresh.pointName||'')} · ${isInsert?`แทรกเป็นเสาต้นที่ ${nextNo} · เสาเดิมจะเลื่อนเลขให้อัตโนมัติ`:`เสาลำดับที่ ${nextNo}`}</div>
 
     <div class="stat" style="padding:12px;margin-bottom:14px">
       <div id="np_coord" class="mono" style="font-size:13px">${g.lat}, ${g.lng}</div>
@@ -1971,24 +2211,31 @@ async function addPoleGPS(p,opts){
     const lamp=readLampPicker(wrap,'np');
     const target=POINTS.find(x=>x.id===p.id)||p;
     target.poles=target.poles||[];
-    target.poles.push({id:uid('e'),label:wrap.querySelector('#np_label').value.trim()||('เสาต้นที่ '+nextNo),
+    const typedLabel=wrap.querySelector('#np_label').value.trim();
+    const newPole={id:uid('e'),label:typedLabel||('เสาต้นที่ '+nextNo),
       lat:coord.lat,lng:coord.lng,acc:coord.acc,note:wrap.querySelector('#np_note').value.trim(),
-      lampType:lamp.lampType,watt:lamp.watt,lampTypeOther:lamp.lampTypeOther});
+      lampType:lamp.lampType,watt:lamp.watt,lampTypeOther:lamp.lampTypeOther};
+    // แทรกตามตำแหน่ง หรือต่อท้าย
+    const pos=(opts.insertBeforeId)?target.poles.findIndex(x=>x.id===opts.insertBeforeId):target.poles.length;
+    const realPos=(pos<0)?target.poles.length:pos;
+    target.poles.splice(realPos,0,newPole);
+    // ถ้าผู้ใช้ไม่ได้ตั้งชื่อเอง (ยังเป็น "เสาต้นที่ N") ให้ไล่เลขใหม่ทั้งหมด
+    if(!typedLabel||/^เสาต้นที่\s*\d+$/.test(typedLabel))renumberPoles(target);
     try{
       const saved=await savePoint(target);
-      const savedPole=target.poles[target.poles.length-1];
+      const savedPole=target.poles[realPos];
       wrap.remove();
-      const n=(saved.poles||[]).length;
-      toast('✅ บันทึกเสาต้นที่ '+n+' แล้ว');
-      // ถามต่อทันที เพื่อเดินเก็บหลายต้นรวดเดียว
-      const again=await askContinuePole(p,n,method);
-      if(again){
-        addPoleGPS(POINTS.find(x=>x.id===p.id)||p,{method:again,lastLamp:savedPole});
-      }else{
-        renderDetail(p.id);
+      const n=realPos+1;
+      toast(isInsert?('✅ แทรกเป็นเสาต้นที่ '+n+' แล้ว'):('✅ บันทึกเสาต้นที่ '+n+' แล้ว'));
+      // ถามต่อเฉพาะการเพิ่มต่อท้าย (การแทรกไม่ต้องถามต่อ)
+      if(!isInsert){
+        const again=await askContinuePole(p,(saved.poles||[]).length,method);
+        if(again){addPoleGPS(POINTS.find(x=>x.id===p.id)||p,{method:again,lastLamp:savedPole});return;}
       }
+      renderDetail(p.id);
     }catch(err){
-      target.poles.pop();
+      target.poles.splice(realPos,1);
+      if(!typedLabel||/^เสาต้นที่\s*\d+$/.test(typedLabel))renumberPoles(target);
       btn.disabled=false;btn.textContent='💾 ลองบันทึกอีกครั้ง';
       alert('บันทึกไม่สำเร็จ\n\n'+(err.message||err)+'\n\nเสายังไม่ถูกเพิ่ม กรุณาลองใหม่');
     }
@@ -2474,7 +2721,7 @@ function renderWorkOrder(){
     </div>
     <div class="content">
       <div class="action-row no-print" style="margin-top:0;margin-bottom:14px">
-        <button class="btn btn-primary" onclick="window.print()">🖨️ พิมพ์ใบสั่งงาน</button>
+        <button class="btn btn-primary" onclick="doPrint()">🖨️ พิมพ์ใบสั่งงาน</button>
         <button class="btn btn-outline" onclick="exportExcel()">📊 Excel</button>
       </div>
 
@@ -2836,6 +3083,9 @@ function renderMap(){
         <button class="btn btn-outline btn-sm" id="m_track">📡 ตำแหน่งฉัน</button>
         <button class="btn btn-outline btn-sm" id="m_gmap">🗺️ Google Maps</button>
       </div>
+      <div class="action-row" style="margin-top:0;margin-bottom:10px">
+        <button class="btn btn-primary btn-sm" id="m_printsel">🖨️ พิมพ์แผนที่/รายการ (เลือกได้)</button>
+      </div>
       <div id="fullmap"></div>
       <div id="trackInfo" style="display:none;font-size:12px;text-align:center;margin-top:8px;padding:8px;background:var(--surface);border:1px solid var(--line);border-radius:10px"></div>
       <div class="map-legend">
@@ -2924,6 +3174,7 @@ function renderMap(){
     trackBtn.onclick=()=>{watchId==null?startTrack():stopTrack();};
 
     /* เปิด Google Maps โดยตรง (นำทาง/ดูตำแหน่งจริง) */
+    document.getElementById('m_printsel').onclick=openPrintSelect;
     document.getElementById('m_gmap').onclick=()=>{
       if(lastFix){
         window.open('https://www.google.co.th/maps/search/?api=1&query='+lastFix.lat+','+lastFix.lng,'_blank');
@@ -2948,7 +3199,7 @@ function renderQrAll(){
       <p>พิมพ์ติดเสาไฟ · สแกนเพื่อเปิดข้อมูลจุดนั้นทันที</p>
     </div>
     <div class="content">
-      <button class="btn btn-primary btn-block no-print" style="margin-bottom:14px" onclick="window.print()">🖨️ พิมพ์ QR ทั้งหมด</button>
+      <button class="btn btn-primary btn-block no-print" style="margin-bottom:14px" onclick="doPrint()">🖨️ พิมพ์ QR ทั้งหมด</button>
       ${!POINTS.length?'<div class="empty"><div class="big">▦</div>ยังไม่มีข้อมูลจุด</div>':''}
       ${groups.map(g=>`<div class="section-label">${esc(g)}</div><div class="qr-grid">${POINTS.filter(p=>p.group===g).map(p=>`<div class="qr-cell"><div class="qhold" id="qh_${p.id}"></div><div class="cap">${esc(p.pointName)}</div><div class="sub" style="font-weight:600;color:var(--ink)">${esc(p.moo||p.group||'')}</div><div class="sub">${lampLabel(p)} · ${lampCount(p)} โคม</div></div>`).join('')}</div>`).join('')}
     </div>`;
@@ -2992,7 +3243,7 @@ function renderReport(){
     </div>
     <div class="content">
       <div class="action-row no-print" style="margin-bottom:8px">
-        <button class="btn btn-primary" onclick="window.print()">🖨️ พิมพ์ / PDF</button>
+        <button class="btn btn-primary" onclick="doPrint()">🖨️ พิมพ์ / PDF</button>
         <button class="btn btn-outline" onclick="exportExcel()">📊 ส่งออก Excel</button>
       </div>
       <div class="section-label no-print">ส่งออกสำหรับงานเขียนแบบ</div>
@@ -3082,9 +3333,10 @@ function renderInventory(){
   el.innerHTML=rows.map(({it,s,short})=>{
     const unit=it.unit||'ดวง';
     const pct=s.in?Math.round(s.remaining/s.in*100):0;
+    const spec=[it.lampType?typeMeta(it.lampType).label:'',it.watt?it.watt+' วัตต์':''].filter(Boolean).join(' ');
     return `<a class="row" href="#/inv/${it.id}" style="align-items:stretch">
       <div class="info">
-        <div class="name">${esc(it.name)}</div>
+        <div class="name">${esc(it.name)}${spec?` <span style="font-weight:400;color:var(--ink-soft);font-size:13px">(${esc(spec)})</span>`:''}</div>
         <div class="meta">รับเข้า ${s.in} · ใช้ไป ${s.out} · <b style="color:var(--ink)">คงเหลือ ${s.remaining} ${esc(unit)}</b></div>
         <div class="bar-track" style="height:7px;margin-top:6px"><div class="bar-fill" style="width:${pct}%;background:${short>0?'var(--danger)':'var(--ok)'}"></div></div>
       </div>
