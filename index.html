@@ -158,7 +158,13 @@
   .step-btn.on{background:var(--c);border-color:var(--c);color:#fff;}
 
   /* map view */
-  #fullmap{width:100%;height:calc(100vh - 210px);min-height:360px;border-radius:var(--radius);border:1px solid var(--line);}
+  #fullmap{width:100%;height:calc(100vh - 210px);min-height:360px;border-radius:var(--radius);border:1px solid var(--line);position:relative;z-index:0;isolation:isolate;}
+  #printMap{position:relative;z-index:0;isolation:isolate;}
+  /* กันแผนที่ Leaflet ทับกล่องเลือก/ป๊อปอัป/แถบเมนู (Leaflet ตั้ง z-index สูงถึง ~1000) */
+  .leaflet-pane,.leaflet-top,.leaflet-bottom,.leaflet-control,.leaflet-control-container{z-index:1!important;}
+  .leaflet-popup-pane{z-index:2!important;}
+  /* แถบเครื่องมือเหนือแผนที่ ต้องอยู่เหนือแผนที่เสมอ */
+  .content .action-row{position:relative;z-index:5;}
   .leaflet-div-marker{border-radius:50%;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.3);}
   .map-legend{display:flex;gap:12px;flex-wrap:wrap;margin:10px 2px 0;font-size:12px;color:var(--ink-soft);}
   .map-legend span{display:inline-flex;align-items:center;gap:5px;}
@@ -294,6 +300,7 @@ const ClaudeDB={
 function makeFirebaseDB(db,fs){
   const col=k=>fs.doc(db,FS_COLLECTION,k);
   return {
+    _fs:fs,_db:db,
     async list(prefix){
       const snap=await fs.getDocs(fs.collection(db,FS_COLLECTION));
       const keys=[];snap.forEach(d=>{if(d.id.startsWith(prefix))keys.push(d.id);});
@@ -305,7 +312,12 @@ function makeFirebaseDB(db,fs){
       return {key:k,value:d.data().value};
     },
     async set(k,v){await fs.setDoc(col(k),{value:v,updatedAt:Date.now()});return {key:k,value:v};},
-    async delete(k){await fs.deleteDoc(col(k));return {key:k,deleted:true};}
+    async delete(k){await fs.deleteDoc(col(k));return {key:k,deleted:true};},
+    // ฟังการเปลี่ยนแปลงแบบเรียลไทม์ (ทุกเครื่องเห็นพร้อมกัน)
+    listen(cb){
+      try{return fs.onSnapshot(fs.collection(db,FS_COLLECTION),snap=>cb(snap),err=>console.error('listen err',err));}
+      catch(e){console.error('onSnapshot unavailable',e);return null;}
+    }
   };
 }
 
@@ -319,8 +331,7 @@ function setFbConfig(cfg){
 let FB_ERROR='';
 async function connectFirebase(cfg){
   const appMod=await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js');
-  const fs=await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js');
-  const app=appMod.initializeApp(cfg);
+  const fs=await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js');  const app=appMod.initializeApp(cfg);
   const db=fs.getFirestore(app);
   const inst=makeFirebaseDB(db,fs);
   await inst.list('__ping');   // ทดสอบว่าอ่านได้จริง
@@ -434,6 +445,33 @@ async function loadArr(prefix){
 }
 async function loadAll(){
   [POINTS,REPAIRS,INV,TX]=await Promise.all([loadArr(P_PREFIX),loadArr(R_PREFIX),loadArr(IV_PREFIX),loadArr(TX_PREFIX)]);
+}
+/* ฟังการเปลี่ยนแปลงจาก Firestore แบบเรียลไทม์ · ทุกเครื่องเห็นพร้อมกัน */
+let _liveOn=false, _liveTimer=null, _liveRender=false;
+function startLiveSync(){
+  if(_liveOn||DB_MODE!=='firebase'||!DB.listen)return;
+  const unsub=DB.listen(snap=>{
+    const P=[],R=[],I=[],T=[];
+    snap.forEach(d=>{
+      let v;try{v=JSON.parse(d.data().value);}catch(e){return;}
+      if(!v)return;
+      const id=d.id;
+      if(id.startsWith(P_PREFIX))P.push(v);
+      else if(id.startsWith(R_PREFIX))R.push(v);
+      else if(id.startsWith(IV_PREFIX))I.push(v);
+      else if(id.startsWith(TX_PREFIX))T.push(v);
+    });
+    POINTS=P;REPAIRS=R;INV=I;TX=T;
+    // หน่วงเล็กน้อยกันการ re-render ถี่เกินตอนซิงก์หลายเอกสาร
+    clearTimeout(_liveTimer);
+    _liveTimer=setTimeout(()=>{
+      const h=location.hash||'';
+      const editing=h==='#/new'||h.startsWith('#/edit/')||document.querySelector('.sheet-open')||document.querySelector('[style*="z-index:2000"]');
+      if(editing)return;   // อย่ารีเฟรชทับหน้าฟอร์ม/ป๊อปอัปที่กำลังใช้
+      _liveRender=true;render();_liveRender=false;
+    },500);
+  });
+  if(unsub)_liveOn=true;
 }
 async function savePoint(p){
   const key=P_PREFIX+p.id;
@@ -1168,7 +1206,7 @@ function openPrintSelect(){
   if(!keys.length){alert('ยังไม่มีข้อมูลจุดติดตั้ง');return;}
 
   const wrap=document.createElement('div');
-  wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:75;display:flex;align-items:flex-end;justify-content:center;';
+  wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:2000;display:flex;align-items:flex-end;justify-content:center;';
   wrap.innerHTML=`<div style="background:#fff;width:100%;max-width:760px;border-radius:18px 18px 0 0;padding:20px 16px 24px;max-height:92vh;overflow:auto">
     <div style="font-weight:700;font-size:16px;margin-bottom:2px">เลือกพิมพ์แผนผังเสาไฟ</div>
     <div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:14px">เลือกหมู่และซอยที่ต้องการ · ติ๊กหมู่เพื่อเลือกทุกซอย หรือเลือกเฉพาะบางซอย</div>
@@ -1379,7 +1417,8 @@ function render(){
   drawNav(h);
   applyMode();
   updateCloudWarn();
-  window.scrollTo(0,0);
+  if(DB_MODE==='firebase'&&!_liveOn)startLiveSync();
+  if(!_liveRender)window.scrollTo(0,0);
 }
 function drawNav(h){
   let nav=document.getElementById('navbar');
@@ -1403,7 +1442,14 @@ function renderDashboard(){
   const totalPoints=POINTS.length;
   const totalLamps=POINTS.reduce((s,p)=>s+lampCount(p),0);
   const byType={sodium:0,metal:0,led:0,other:0};
-  POINTS.forEach(p=>{byType[p.lampType]=(byType[p.lampType]||0)+lampCount(p);});
+  POINTS.forEach(p=>{
+    const poles=(p.poles||[]);
+    if(poles.length){
+      poles.forEach(pole=>{const t=pole.lampType||p.lampType||'other';byType[t]=(byType[t]||0)+1;});
+    }else{
+      const t=p.lampType||'other';byType[t]=(byType[t]||0)+lampCount(p);
+    }
+  });
   const stCount={pending:0,new:0,check:0,waiting:0,progress:0,done:0};
   visibleRepairs().forEach(r=>{stCount[r.status]=(stCount[r.status]||0)+1;});
   const openRep=stCount.new+stCount.check+(stCount.waiting||0)+stCount.progress;
@@ -1813,7 +1859,7 @@ function captureGPS(){
     let cmap=null, pin=null, meDot=null, meCircle=null, manual=false, autoStopped=false;
 
     const wrap=document.createElement('div');
-    wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:70;display:flex;align-items:flex-end;justify-content:center;';
+    wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:2000;display:flex;align-items:flex-end;justify-content:center;';
     wrap.innerHTML=`<div style="background:#fff;width:100%;max-width:760px;border-radius:18px 18px 0 0;padding:18px 14px 22px;max-height:94vh;overflow:auto">
       <div style="font-weight:700;font-size:16px;margin-bottom:2px">จับสัญญาณ GPS · ตำแหน่งเสา</div>
       <div style="font-size:12px;color:var(--ink-soft);margin-bottom:10px">🔵 ตำแหน่งฉัน · 🔴 ตำแหน่งเสา (ลากปรับได้)</div>
@@ -1987,7 +2033,7 @@ function captureGPS(){
 function pickOnMap(initLat,initLng){
   return new Promise(resolve=>{
     const wrap=document.createElement('div');
-    wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:70;display:flex;align-items:flex-end;justify-content:center;';
+    wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:2000;display:flex;align-items:flex-end;justify-content:center;';
     wrap.innerHTML=`<div style="background:#fff;width:100%;max-width:760px;border-radius:18px 18px 0 0;padding:16px 14px 20px">
       <div style="font-weight:700;font-size:16px;margin-bottom:2px">ปักหมุดเลือกตำแหน่ง</div>
       <div style="font-size:12px;color:var(--ink-soft);margin-bottom:10px">แตะเพื่อวางหมุด · <b>ลากหมุดเพื่อปรับให้ตรงจุด</b> · ซูมเข้าเพื่อความแม่นยำ</div>
@@ -2113,7 +2159,7 @@ function readLampPicker(root,idPrefix){
 function askPoleMethod(){
   return new Promise(resolve=>{
     const wrap=document.createElement('div');
-    wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:70;display:flex;align-items:flex-end;justify-content:center;';
+    wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:2000;display:flex;align-items:flex-end;justify-content:center;';
     wrap.innerHTML=`<div style="background:#fff;width:100%;max-width:760px;border-radius:18px 18px 0 0;padding:20px 16px 24px">
       <div style="font-weight:700;font-size:16px;margin-bottom:2px">ระบุตำแหน่งเสาด้วยวิธีใด?</div>
       <div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:16px">เลือกวิธีที่เหมาะกับสถานการณ์</div>
@@ -2169,7 +2215,7 @@ async function addPoleGPS(p,opts){
   const nextNo=posNo;
 
   const wrap=document.createElement('div');
-  wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:70;display:flex;align-items:flex-end;justify-content:center;';
+  wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:2000;display:flex;align-items:flex-end;justify-content:center;';
   const accWarn=(g.acc&&+g.acc>30);
   wrap.innerHTML=`<div style="background:#fff;width:100%;max-width:760px;border-radius:18px 18px 0 0;padding:20px 16px 24px;max-height:92vh;overflow:auto">
     <div style="font-weight:700;font-size:16px;margin-bottom:2px">${isInsert?'แทรกเสาไฟ':'ยืนยันเพิ่มเสาไฟ'}</div>
@@ -2246,7 +2292,7 @@ async function addPoleGPS(p,opts){
 function askContinuePole(p,count,lastMethod){
   return new Promise(resolve=>{
     const wrap=document.createElement('div');
-    wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:72;display:flex;align-items:flex-end;justify-content:center;';
+    wrap.style.cssText='position:fixed;inset:0;background:rgba(27,36,48,.6);z-index:2000;display:flex;align-items:flex-end;justify-content:center;';
     wrap.innerHTML=`<div style="background:#fff;width:100%;max-width:760px;border-radius:18px 18px 0 0;padding:22px 16px 24px;text-align:center">
       <div style="font-size:44px;line-height:1;margin-bottom:6px">✅</div>
       <div style="font-weight:700;font-size:17px">บันทึกเสาต้นที่ ${count} แล้ว</div>
@@ -3794,6 +3840,7 @@ window.addEventListener('hashchange',render);
   await loadAll();
   render();
   // สำรองอัตโนมัติเบื้องหลัง (ไม่ขวางการใช้งาน)
+  startLiveSync();
   setTimeout(()=>{runAutoBackup().then(r=>{if(r&&r.ok)console.log('auto backup ok',r.key);});},4000);
 })();
 </script>
